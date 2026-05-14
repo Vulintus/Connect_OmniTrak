@@ -27,7 +27,7 @@ function [ctrl, varargout] = Connect_OmniTrak(varargin)
 %   2025-04-22 - Drew Sloan - Added the option to specify device types.
 %
 
-%Collated: 2025-06-19, 12:54:59
+%Collated: 2026-05-14, 11:54:00
 
 req_class_files =	{
 		'Vulintus_OTSC_Stream_Class';
@@ -364,7 +364,7 @@ function device = Vulintus_Load_OTSC_Device_IDs
 %	Library documentation:
 %	https://github.com/Vulintus/OmniTrak_Serial_Communication
 %
-%	This function was programmatically generated: 2025-06-09, 07:46:01 (UTC)
+%	This function was programmatically generated: 2025-10-05, 06:33:22 (UTC)
 %
 
 device = dictionary;
@@ -1022,6 +1022,8 @@ function ctrl = Vulintus_OTSC_Cue_Light_Functions(ctrl, varargin)
 %   2024-06-07 - Drew Sloan - Added a optional "devices" input argument to
 %                             selectively add the functions to the control 
 %                             structure.
+%   2025-07-09 - Drew Sloan - Combined OTSC blocks for setting the cue
+%                             index and light queue index.
 %
 
 
@@ -1030,7 +1032,9 @@ device_list = { 'MT-PP',...
                 'OT-3P',...
                 'OT-NP',...
                 'OT-PR',...
-                'OT-LR'};
+                'OT-LR',...
+                'PB-LD',...
+                'PB-PD'};
 
 %If an cell arracy of connected devices was provided, match against the device lis.
 if nargin >= 2
@@ -1051,58 +1055,53 @@ ctrl.cue = [];                                                              %Cre
 
 %Show the specified cue light.
 ctrl.cue.on = ...
-    @(i,varargin)Vulintus_OTSC_Transaction(serialcon,...
+    @(cue_i, queue_i,varargin)Vulintus_OTSC_Transaction(serialcon,...
     ctrl.stream.otsc_codes('CUE_LIGHT_ON'),...
-    'data',{i,'uint8'},...
+    'data',{cue_i,'uint8'; queue_i,'uint8'},...
     varargin{:});                         
 
 %Turn off any active cue light.
 ctrl.cue.off = ...
-    @(varargin)Vulintus_OTSC_Transaction(serialcon,...
+    @(varargin)Vulintus_OTSC_Cue_Light_Off(serialcon,...
     ctrl.stream.otsc_codes('CUE_LIGHT_OFF'),...
-    varargin{:});         
+    varargin{:});   
+
+%Turn on/off the cue lights specified by the bits in a 16-bit bitmask.
+ctrl.cue.mask = ...
+    @(bitmask, queue_i,varargin)Vulintus_OTSC_Transaction(serialcon,...
+    ctrl.stream.otsc_codes('CUE_LIGHT_ON_MASK'),...
+    'data',{bitmask,'uint16'},...
+    varargin{:});       
 
 %Request/set the current cue light index.
 ctrl.cue.index.get = ...
     @(varargin)Vulintus_OTSC_Transaction(serialcon,...
     ctrl.stream.otsc_codes('REQ_CUE_LIGHT_INDEX'),...
-    'reply',{1,'uint8'},...
+    'reply',{2,'uint8'},...
     varargin{:});             
 ctrl.cue.index.set = ...
-    @(i,varargin)Vulintus_OTSC_Transaction(serialcon,...
+    @(cue_i,queue_i,varargin)Vulintus_OTSC_Transaction(serialcon,...
     ctrl.stream.otsc_codes('CUE_LIGHT_INDEX'),...
-    'data',{i,'uint8'},...
-    varargin{:});
-
-%Request/set the current cue light queue index.
-ctrl.cue.queue_index.get = ...
-    @(varargin)Vulintus_OTSC_Transaction(serialcon,...
-    ctrl.stream.otsc_codes('REQ_CUE_LIGHT_QUEUE_INDEX'),...
-    'reply',{1,'uint8'},...
-    varargin{:});   
-ctrl.cue.queue_index.set = ...
-    @(i,varargin)Vulintus_OTSC_Transaction(serialcon,...
-    ctrl.stream.otsc_codes('CUE_LIGHT_QUEUE_INDEX'),...
-    'data',{i,'uint8'},...
+    'data',{cue_i,'uint8'; queue_i,'uint8'},...
     varargin{:});
 
 %Request/set the RGBW values for the current cue light (0-255).
 ctrl.cue.rgbw.get =...
     @(varargin)Vulintus_OTSC_Transaction(serialcon,...
     ctrl.stream.otsc_codes('REQ_CUE_LIGHT_RGBW'),...
-    'reply',{4,'uint8'},...
+    'reply',{2,'uint8'; 4,'uint8'},...
     varargin{:});       
 ctrl.cue.rgbw.set = ...
-    @(rgbw,varargin)Vulintus_OTSC_Transaction(serialcon,...
-    ctrl.stream.otsc_codes('CUE_LIGHT_RGBW'),...
-    'data',{rgbw,'uint8'},...
-    varargin{:});
+    @(rgbw,varargin)Vulintus_OTSC_Cue_Light_Set_RGBW(serialcon,...
+    ctrl.stream.otsc_codes('CUE_LIGHT_RGBW'),rgbw,...
+    varargin{:});   
+
 
 %Request/set the current cue light duration, in milliseconds.
 ctrl.cue.dur.get = ...
     @(varargin)Vulintus_OTSC_Transaction(serialcon,...
     ctrl.stream.otsc_codes('REQ_CUE_LIGHT_DUR'),...
-    'reply',{1,'uint16'},...
+    'reply',{2,'uint8'; 1,'uint16'},...
     varargin{:});         
 ctrl.cue.dur.set = ...
     @(i,varargin)Vulintus_OTSC_Transaction(serialcon,...
@@ -1110,7 +1109,74 @@ ctrl.cue.dur.set = ...
     'data',{i,'uint16'},...
     varargin{:});
 
-     
+%Request the number of queueable cue light stimuli.
+ctrl.cue.queue.size = ...
+    @(varargin)Vulintus_OTSC_Transaction(serialcon,...
+    ctrl.stream.otsc_codes('REQ_CUE_LIGHT_QUEUE_SIZE'),...
+    'reply',{1,'uint8'},...
+    varargin{:});  
+
+
+%*****************************************************************************************************************************************************
+%Turn off the specified cue LED, or turn off all LEDs if none is specified.
+function Vulintus_OTSC_Cue_Light_Off(serialcon, cmd_code, varargin)
+if ~isempty(varargin) && isnumeric(varargin{1})                             %If a cue index was specified...
+    cue_i = varargin{1};                                                    %Grab the specified cue index.
+    pass_args = varargin(2:end);                                            %Set the passthrough arguments.
+else                                                                        %Otherwise...
+    cue_i = 255;                                                            %Set the cue index to 255.
+    pass_args = varargin;                                                   %Set the passthrough arguments.
+end
+if isempty(pass_args)                                                       %If there's no passthrough arguments...
+    Vulintus_OTSC_Transaction(serialcon, cmd_code,...
+    'data', {cue_i, 'uint8'});                                              %Send just the cue index.
+else                                                                        %Otherwise, if there are passthrough arguments...
+    Vulintus_OTSC_Transaction(serialcon, cmd_code,...
+    'data', {cue_i, 'uint8'},...
+    pass_args{:});                                                          %Send the cue index with the passthrough arguments.
+end
+
+
+%*****************************************************************************************************************************************************
+%Turn off the specified cue LED, or turn off all LEDs if none is specified.
+function Vulintus_OTSC_Cue_Light_Set_RGBW(serialcon, cmd_code, rgbw, varargin)
+pwm = zeros(1,4);                                                           %Assume by default that all PWM values will be zero.
+if ischar(rgbw)                                                             %If the RGBW values were entered a characters (presumably HEX)...
+    rgbw(rgbw == '#') = [];                                                 %Kick out any pound signs.
+    if startsWith(rgbw,'0x','IgnoreCase',true)                              %If the text starts with "0x'...
+        rgbw(1:2) = [];                                                     %Kick out the "0x".
+    end
+    rgbw = upper(rgbw);                                                     %Convert the characters to uppercase.
+    rgbw(rgbw < '0' | rgbw > 'F' | (rgbw > '9' & rgbw < 'A')) = [];         %Kick out all non-HEX characters.
+    if length(rgbw) < 6 || length(rgbw) > 8                                 %If the remaining HEX value isn't 6 or 8 characters long...
+        warning(['ERROR IN %s: Cue light colors should be specified as '...
+            'a 6-character RGB or 8-character RGBW HEX value (0-F). '...
+            'The cue light color was NOT set!'], upper(mfilename));         %Show a warning.
+        return                                                              %Skip the rest of the function.
+    end
+    if length(rgbw) == 6                                                    %If the hex value is 6 characters...
+        rgbw = horzcat(rgbw,'00');                                          %Add zero values for the white element.
+    end
+    rgbw = fliplr(typecast(uint32(hex2dec(rgbw)),'uint8'));                 %Convert the RGBW values to numbers.
+else                                                                        %Otherwise, if the RGBW values are numeric...    
+    if ~isnumeric(rgbw) || ~isvector(rgbw) || length(rgbw) < 3 || ...
+            length(rgbw) > 4 || any(rgbw < 0) || any(rgbw > 255)            %If the input doesnt specify RGB PWM values...
+        warning(['ERROR IN %s: Cue light colors should be specified as '...
+            'a 3-element RGB or 4-element RGBW vector of PWM values '...
+            '(0-255). The cue light color was NOT set!'],...
+            upper(mfilename));                                              %Show a warning.
+        return                                                              %Skip the rest of the function.
+    end   
+end
+pwm(1:length(rgbw)) = rgbw(:);                                              %Copy the RGBW values to the default PWM values.
+if isempty(varargin)                                                        %If there's no passthrough arguments...
+    Vulintus_OTSC_Transaction(serialcon, cmd_code,...
+    'data', {pwm, 'uint8'});                                                %Send just the RGBW values.
+else                                                                        %Otherwise, if there are passthrough arguments...
+    Vulintus_OTSC_Transaction(serialcon, cmd_code,...
+    'data', {pwm, 'uint8'},...
+    varargin{:});                                                           %Send the RGBW valueswith the passthrough arguments.
+end
 
 
 %% ************************************************************************
@@ -1135,7 +1201,12 @@ function ctrl = Vulintus_OTSC_Dispenser_Functions(ctrl, varargin)
 
 
 %List the Vulintus devices that use these functions.
-device_list = {'MT-PP','OT-3P','OT-CC'};
+device_list = { 'MT-PP',...
+                'OT-3P',...
+                'OT-CC',...
+                'PB-LD',...     % VPB Liquid Dispenser
+                'PB-PD',...     % VPB Pellet Dispenser
+              };
 
 %If an cell arracy of connected devices was provided, match against the device lis.
 if nargin >= 2
@@ -1179,11 +1250,13 @@ ctrl.feed.cur_feeder.set = ...
     varargin{:});                                                 
 
 %Request/set the current dispenser trigger duration, in milliseconds.
-ctrl.feed.trig_dur.get = @(varargin)Vulintus_OTSC_Transaction(serialcon,...
+ctrl.feed.trig_dur.get = ...
+    @(varargin)Vulintus_OTSC_Transaction(serialcon,...
     ctrl.stream.otsc_codes('REQ_FEED_TRIG_DUR'),...
     'reply',{1,'uint16'},...
     varargin{:});
-ctrl.feed.trig_dur.set = @(dur)Vulintus_OTSC_Transaction(serialcon,...
+ctrl.feed.trig_dur.set = ...
+    @(dur,varargin)Vulintus_OTSC_Transaction(serialcon,...
     ctrl.stream.otsc_codes('FEED_TRIG_DUR'),...
     'data',{dur,'uint16'},...
     varargin{:});
@@ -1408,7 +1481,8 @@ device_list = { 'MT-PP',...
                 'OT-3P',...
                 'OT-NP',...
                 'OT-PR',...
-                'OT-LR'};
+                'OT-LR',...
+                'PB-LD'};
 
 %If an cell arracy of connected devices was provided, match against the device lis.
 if nargin >= 2
@@ -1429,57 +1503,57 @@ ctrl.irdet = [];                                                            %Cre
 
 %Request the current IR detector status bitmask.
 ctrl.irdet.bits = @(varargin)Vulintus_OTSC_Transaction(serialcon,...
-	ctrl.stream.otsc_codes('REQ_POKE_BITMASK'),...
+	ctrl.stream.otsc_codes('REQ_IR_DET_BITMASK'),...
     'reply',{1,'uint32'; 1,'uint8'},...
     varargin{:});                                               
 
 %Request the current IR detector analog reading.
 ctrl.irdet.adc = ...
    @(varargin)Vulintus_OTSC_Transaction(serialcon,...
-	ctrl.stream.otsc_codes('REQ_POKE_ADC'),...
+	ctrl.stream.otsc_codes('REQ_IR_DET_ADC'),...
    'reply',{1, 'uint32'; 2,'uint16'},...
    varargin{:});        
 
 %Request the minimum and maximum ADC values of the IR detector sensor history, in ADC ticks.
 ctrl.irdet.minmax = ...
     @(varargin)Vulintus_OTSC_Transaction(serialcon,...
-	ctrl.stream.otsc_codes('REQ_POKE_MINMAX'),...
+	ctrl.stream.otsc_codes('REQ_IR_DET_MINMAX'),...
     'reply',{2,'uint16'},...
     varargin{:});                                                           
 
 %Request/set the current IR detector threshold setting, normalized from 0 to 1.
 ctrl.irdet.thresh_fl.get = ...
     @(varargin)Vulintus_OTSC_Transaction(serialcon,...
-	ctrl.stream.otsc_codes('REQ_POKE_THRESH_FL'),...
+	ctrl.stream.otsc_codes('REQ_IR_DET_THRESH_FL'),...
     'reply',{1,'single'},...
     varargin{:});                                                           
 ctrl.irdet.thresh_fl.set = ...
     @(thresh,varargin)Vulintus_OTSC_Transaction(serialcon,...
-    ctrl.stream.otsc_codes('POKE_THRESH_FL'),...
+    ctrl.stream.otsc_codes('IR_DET_THRESH_FL'),...
     'data',{thresh,'single'},...
     varargin{:});
 
 %Request/set the current IR detector auto-threshold setting, in ADC ticks.
 ctrl.irdet.thresh_adc.get = ...
     @(varargin)Vulintus_OTSC_Transaction(serialcon,...
-	ctrl.stream.otsc_codes('REQ_POKE_THRESH_ADC'),...
+	ctrl.stream.otsc_codes('REQ_IR_DET_THRESH_ADC'),...
     'reply',{1,'uint16'},...
     varargin{:});                                                           
 ctrl.irdet.thresh_adc.set = ...
     @(thresh,varargin)Vulintus_OTSC_Transaction(serialcon,...
-    ctrl.stream.otsc_codes('POKE_THRESH_ADC'),...
+    ctrl.stream.otsc_codes('IR_DET_THRESH_ADC'),...
     'data',{thresh,'uint16'},...
     varargin{:});
 
 %Request/set the current IR detector auto-thresholding setting (0 = fixed, 1 = autoset).
 ctrl.irdet.auto_thresh.get = ...
     @(varargin)Vulintus_OTSC_Transaction(serialcon,...
-	ctrl.stream.otsc_codes('REQ_POKE_THRESH_AUTO'),...
+	ctrl.stream.otsc_codes('REQ_IR_DET_THRESH_AUTO'),...
     'reply',{1,'uint8'},...
     varargin{:});                                                           
 ctrl.irdet.auto_thresh.set = ...
     @(i,varargin)Vulintus_OTSC_Transaction(serialcon,...
-    ctrl.stream.otsc_codes('POKE_THRESH_AUTO'),...
+    ctrl.stream.otsc_codes('IR_DET_THRESH_AUTO'),...
     'data',{i,'uint8'},...
     varargin{:});
 
@@ -1487,30 +1561,30 @@ ctrl.irdet.auto_thresh.set = ...
 % current nosepoke.
 ctrl.irdet.min_range.get = ...
     @(varargin)Vulintus_OTSC_Transaction(serialcon,...
-	ctrl.stream.otsc_codes('REQ_POKE_MIN_RANGE'),...
+	ctrl.stream.otsc_codes('REQ_IR_DET_MIN_RANGE'),...
     'reply',{1, 'uint8'; 1,'uint16'},...
     varargin{:});                                                           
 ctrl.irdet.min_range.set = ...
     @(min_range,varargin)Vulintus_OTSC_Transaction(serialcon,...
-    ctrl.stream.otsc_codes('POKE_MIN_RANGE'),...
+    ctrl.stream.otsc_codes('IR_DET_MIN_RANGE'),...
     'data',{min_range,'uint16'},...
     varargin{:});
 
 % Request/set the current nosepoke sensor low-pass filter cutoff frequency, in Hz.
 ctrl.irdet.filter.cutoff.get = ...
     @(varargin)Vulintus_OTSC_Transaction(serialcon,...
-    ctrl.stream.otsc_codes('REQ_POKE_LOWPASS_CUTOFF'),...
+    ctrl.stream.otsc_codes('REQ_IR_DET_LOWPASS_CUTOFF'),...
     'reply',{1, 'uint8'; 1,'single'},...
     varargin{:});             
 ctrl.irdet.filter.cutoff.set = ...
     @(freq,varargin)Vulintus_OTSC_Transaction(serialcon,...
-    ctrl.stream.otsc_codes('POKE_LOWPASS_CUTOFF'),...
+    ctrl.stream.otsc_codes('IR_DET_LOWPASS_CUTOFF'),...
     'data',{freq,'single'},...
     varargin{:});
 
 %Request the current IR detector status bitmask.
 ctrl.irdet.reset = @(varargin)Vulintus_OTSC_Transaction(serialcon,...
-	ctrl.stream.otsc_codes('POKE_RESET'),....
+	ctrl.stream.otsc_codes('IR_DET_RESET'),....
     varargin{:});           
 
 
@@ -1535,7 +1609,11 @@ function ctrl = Vulintus_OTSC_Loadcell_Functions(ctrl, varargin)
 
 
 % List the Vulintus devices that have loadcell/force sensor functions.
-device_list = {'MT-IP','ST-AP','ST-VT'};
+device_list = { 'MT-IP',...
+                'PB-LD',...     % VPB Liquid Dispenser
+                'ST-AP',...     % SensiTrak Arm Proprioception Module      
+                'ST-VT',...
+              };
 
 % If an cell arracy of connected devices was provided, match against the 
 % device list.
@@ -1773,7 +1851,10 @@ function ctrl = Vulintus_OTSC_Memory_Functions(ctrl, varargin)
 
 %List the Vulintus devices that use these functions.
 device_list = { 'OT-3P',...
-                'OT-CC'};
+                'OT-CC',...
+                'PB-LD',...     % VPB Liquid Dispenser
+                'PB-PD',...     % VPB Pellet Dispenser
+               };
 
 %If an cell arracy of connected devices was provided, match against the device lis.
 if nargin >= 2
@@ -1833,8 +1914,11 @@ function ctrl = Vulintus_OTSC_Motor_Setup_Functions(ctrl, varargin)
 %List the Vulintus devices that use these functions.
 device_list = { 'MT-PP',...
                 'OT-PD',...
-                'ST-TC',...
-                'ST-AP'};
+                'PB-LD',...     % VPB Liquid Dispenser
+                'PB-PD',...     % VPB Pellet Dispenser
+                'ST-AP',...
+                'ST-TC',...                
+              };
 
 %If an cell arracy of connected devices was provided, match against the device lis.
 if nargin >= 2
@@ -2198,7 +2282,8 @@ function Vulintus_OTSC_Process_Unknown_Block_Error(ctrl, src, varargin)
 %   2025-06-04 - Drew Sloan - Function first created.
 %
 
-fprintf('UNKNOWN_BLOCK_ERROR packet received from device #%1.0f',...
+
+fprintf(1, 'UNKNOWN_BLOCK_ERROR packet received from device #%1.0f',...
     src);                                                                   %Print a warning header.
 if src == 0                                                                 %If the packet came from the primary device..
     if isnt_empty_field(ctrl,'device','sku')                                %If  the SKU is known...
@@ -2206,10 +2291,25 @@ if src == 0                                                                 %If 
     end
 else                                                                        %If the packet came from a module.
     if isnt_empty_field(ctrl,'otmp')                                        %If the module sku is known...
-        error('NEED TO FINISH CODING THIS BIT!');
+        fprintf(1,' (%s)', ctrl.otmp.port(src).sku);                        %Print the SKU.
     end
 end
-fprintf(1,' -> 0x%04X\n', varargin{1});                                     %Print the hex value of the received packet code.
+fprintf(1,' -> 0x%04X', varargin{1}(1));                                    %Print the hex value of the received packet code.
+all_keys = keys(ctrl.stream.otsc_codes);                                    %Grab a list of all the OTSC block names.
+all_codes = values(ctrl.stream.otsc_codes);                                 %Grab a list of all the OTSC block values.
+if any(varargin{1}(1) == all_codes)                                         %If the unknown code is recognized...
+    fprintf(1,' (%s)\n', all_keys(varargin{1}(1) == all_codes));            %Print the packet name.
+else                                                                        %Otherwise...
+    fprintf(1,'\n');                                                        %Print a carriage return.
+end
+if varargin{1}(2) ~= 0                                                      %If a valid preceding packet was reported...
+    fprintf(1,'\tLast preceding packet -> 0x%04X', varargin{1}(2));         %Print the last preceding packet value.
+    if any(varargin{1}(2) == all_codes)                                     %If the code is recognized...
+        fprintf(1,' (%s)\n', all_keys(varargin{1}(2) == all_codes));        %Print the packet name.
+    else                                                                    %Otherwise...
+        fprintf(1,'\n');                                                    %Print a carriage return.
+    end
+end
 
 
 %% ************************************************************************
@@ -2238,6 +2338,7 @@ function ctrl = Vulintus_OTSC_Stepper_Motion_Functions(ctrl, varargin)
 %   2025-01-24 - Drew Sloan - Renamed script from
 %                             "Vulintus_OTSC_Linear_Motion_Functions.m" to 
 %                             "Vulintus_OTSC_Stepper_Motion_Functions.m".
+%   2025-07-29 - Drew Sloan - Added the position zeroing command.
 %
 
 
@@ -2247,7 +2348,8 @@ device_list = { 'MT-PP',...     % MotoTrak Pellet Pedestal Module
                 'OT-SC',...     % OmniTrak Social Choice Module
                 'PB-LA',...     % VPB Linear Autopositioner
                 'PB-PD',...     % VPB Pellet Dispenser
-                'ST-AP',...     % SensiTrak Arm Proprioception Module
+                'PB-LD',...     % VPB Liquid Dispenser
+                'ST-AP',...     % SensiTrak Arm Proprioception Module                   
               };
 
 %If an cell arracy of connected devices was provided, match against the device lis.
@@ -2262,15 +2364,22 @@ if nargin >= 2
     end
 end
 
-serialcon = ctrl.stream.serialcon;                                          %Grab the handle for the serial connection.get_
+%Grab the handle for the serial connection.
+serialcon = ctrl.stream.serialcon;                                          
 
-%Module linear motion functions.
-ctrl.move = [];                                                             %Create a field to hold linear motion functions.
+%Create a field to hold linear motion functions.
+ctrl.move = [];
 
 %Initiate the homing routine on the module. 
 ctrl.move.rehome = @(varargin)Vulintus_OTSC_Transaction(serialcon,...
     ctrl.stream.otsc_codes('MODULE_REHOME'),...
     varargin{:});                                  
+
+% Set the current position as "home" (i.e. zero millimeters/degrees), 
+% without doing a homing routine.
+ctrl.move.zero = @(varargin)Vulintus_OTSC_Transaction(serialcon,...
+    ctrl.stream.otsc_codes('POS_ZERO'),...
+    varargin{:});          
 
 %Retract the module movement to its starting or base position. 
 ctrl.move.retract = @(varargin)Vulintus_OTSC_Transaction(serialcon,...
@@ -2413,48 +2522,72 @@ ctrl.ttl.index.set = ...
 %Immediately start/stop a TTL pulse.
 ctrl.ttl.start = ...
     @(i,varargin)Vulintus_OTSC_Transaction(serialcon,...
-    ctrl.stream.otsc_codes('TTL_START_PULSE'),...
+    ctrl.stream.otsc_codes('TTL_START_PULSETRAIN'),...
     'data',{i,'uint8'},...
     varargin{:});
 ctrl.ttl.stop = ...
     @(i,varargin)Vulintus_OTSC_Transaction(serialcon,...
-    ctrl.stream.otsc_codes('TTL_STOP_PULSE'),...
+    ctrl.stream.otsc_codes('TTL_STOP_PULSETRAIN'),...
     'data',{i,'uint8'},...
     varargin{:});   
 
 %Request/set the current TTL pulse duration, in milliseconds.
 ctrl.ttl.pulse.dur.get = ...
     @(varargin)Vulintus_OTSC_Transaction(serialcon,...
-	otsc_codes.REQ_TTL_PULSE_DUR,...
-    'reply',{1,'uint16'},...
+	ctrl.stream.otsc_codes('REQ_TTL_PULSE_DUR'),...
+    'reply',{1, 'uint8'; 1,'uint16'},...
     varargin{:});    
 ctrl.ttl.pulse.dur.set = ...
     @(dur,varargin)Vulintus_OTSC_Transaction(serialcon,...
-    otsc_codes.TTL_PULSE_DUR,...
+    ctrl.stream.otsc_codes('TTL_PULSE_DUR'),...
+    'data',{dur,'uint16'},...
+    varargin{:});
+
+%Request/set the current TTL onset-to-onset interpulse period, in milliseconds.
+ctrl.ttl.pulse.ipi.get = ...
+    @(varargin)Vulintus_OTSC_Transaction(serialcon,...
+	ctrl.stream.otsc_codes('REQ_TTL_INTERPULSE_PERIOD'),...
+    'reply',{1, 'uint8'; 1,'uint16'},...
+    varargin{:});    
+ctrl.ttl.pulse.ipi.set = ...
+    @(dur,varargin)Vulintus_OTSC_Transaction(serialcon,...
+    ctrl.stream.otsc_codes('TTL_INTERPULSE_PERIOD'),...
+    'data',{dur,'uint16'},...
+    varargin{:});
+
+%Request/set the current number of pulses in the TTL pulsetrain.
+ctrl.ttl.pulse.count.get = ...
+    @(varargin)Vulintus_OTSC_Transaction(serialcon,...
+	ctrl.stream.otsc_codes('REQ_TTL_NUM_PULSES'),...
+    'reply',{1, 'uint8'; 1,'uint16'},...
+    varargin{:});    
+ctrl.ttl.pulse.count.set = ...
+    @(dur,varargin)Vulintus_OTSC_Transaction(serialcon,...
+    ctrl.stream.otsc_codes('TTL_NUM_PULSES'),...
     'data',{dur,'uint16'},...
     varargin{:});
 
 %Request/set the current TTL pulse "on" and "off" values, in volts.
 ctrl.ttl.pulse.levels.get = ...
     @(varargin)Vulintus_OTSC_fcn_REQ_TTL_PULSE_VALS(serialcon,...
-    otsc_codes.REQ_TTL_PULSE_VALS,...
-    [otsc_codes.TTL_PULSE_OFF_VAL, otsc_codes.TTL_PULSE_ON_VAL],...
+    ctrl.stream.otsc_codes('REQ_TTL_PULSE_VALS'),...
+    [ctrl.stream.otsc_codes('TTL_PULSE_OFF_VAL'), ctrl.stream.otsc_codes('TTL_PULSE_ON_VAL')],...
     varargin{:});
 ctrl.ttl.pulse.levels.set = ...
     @(lohi_volts,varargin)Vulintus_OTSC_fcn_TTL_PULSE_x_VAL(serialcon,...
-    [otsc_codes.TTL_PULSE_OFF_VAL, otsc_codes.TTL_PULSE_ON_VAL],...
+    [ctrl.stream.otsc_codes('TTL_PULSE_OFF_VAL'), ctrl.stream.otsc_codes('TTL_PULSE_ON_VAL')],...
     lohi_volts,...
     varargin{:});
 
 %Request/set the current TTL I/O pseudo-interrupt threshold, in volts.
 ctrl.ttl.xint.thresh.get = ...
     @(varargin)Vulintus_OTSC_Transaction(serialcon,...
-	otsc_codes.REQ_TTL_XINT_THRESH,...
-    'reply',{1,'single'},...
+	ctrl.stream.otsc_codes('REQ_TTL_XINT_THRESH'),...
+    'reply',{1, 'uint8'; 1,'single'},...
     varargin{:});    
 ctrl.ttl.xint.thresh.set = ...
     @(thresh,varargin)Vulintus_OTSC_Transaction(serialcon,...
-    otsc_codes.TTL_XINT_THRESH,...
+    ctrl.stream.otsc_codes('TTL_XINT_THRESH'),...
     'data',{thresh,'single'},...
     varargin{:});
 
@@ -2466,14 +2599,14 @@ xint_mode_lookup = {    'none',     0;
                      };
 ctrl.ttl.xint.mode.get = ...
     @(varargin)Vulintus_OTSC_Lookup_Match_Request(serialcon,...
-    otsc_codes.REQ_TTL_XINT_MODE,...
-    otsc_codes.TTL_XINT_MODE,...
+    ctrl.stream.otsc_codes('REQ_TTL_XINT_MODE'),...
+    ctrl.stream.otsc_codes('TTL_XINT_MODE'),...
     xint_mode_lookup,...
     'uint8',...
     varargin{:});
 ctrl.ttl.xint.mode.set = ...
     @(mode,varargin)Vulintus_OTSC_Lookup_Match_Set(serialcon,...
-    otsc_codes.TTL_XINT_MODE,...
+    ctrl.stream.otsc_codes('TTL_XINT_MODE'),...
     xint_mode_lookup,...
     mode,...
     {0, 'uint8'},...
@@ -2482,51 +2615,57 @@ ctrl.ttl.xint.mode.set = ...
 %Set the specified TTL I/O's digital output value.
 ctrl.ttl.digital.out = ...
     @(i,level,varargin)Vulintus_OTSC_Transaction(serialcon,...
-    otsc_codes.TTL_SET_DOUT,...
+    ctrl.stream.otsc_codes('TTL_SET_DOUT'),...
     'data',{i,'uint8'; level,'uint8'},...
     varargin{:});
 
 %Request the current TTL digital status bitmask.
 ctrl.ttl.digital.bitmask = ...
     @(varargin)Vulintus_OTSC_Transaction(serialcon,...
-    otsc_codes.REQ_TTL_DIGITAL_BITMASK,...
+    ctrl.stream.otsc_codes('REQ_TTL_DIGITAL_BITMASK'),...
     'reply',{1, 'uint32'; 1,'uint8'},...
     varargin{:});
 
 %Set the TTL analog output value.
 ctrl.ttl.analog.out = ...
     @(i,volts,varargin)Vulintus_OTSC_Transaction(serialcon,...
-    otsc_codes.TTL_SET_AOUT,...
+    ctrl.stream.otsc_codes('TTL_SET_AOUT'),...
     'data',{i,'uint8'; volts,'single'},...
     varargin{:});
 
 %Request the specified TTL I/O's analog input value.
 ctrl.ttl.analog.read = ...
     @(i, varargin)Vulintus_OTSC_Transaction(serialcon,...
-    otsc_codes.REQ_TTL_AIN,...
+    ctrl.stream.otsc_codes('REQ_TTL_AIN'),...
     'data',{i,'uint8'},...
     'reply',{1,'uint8'; 1,'uint32'; 1,'single'},...
     varargin{:});
 
 
 %Request the current TTL pulse "on" and "off" values.
-function lohi_volts = Vulintus_OTSC_fcn_REQ_TTL_PULSE_VALS(serialcon, req_code, report_code, varargin)
-lohi_volts = nan(1,2);                                                      %Return NaNs if no appropriate reply is received. 
+function varargout = Vulintus_OTSC_fcn_REQ_TTL_PULSE_VALS(serialcon, req_code, report_code, varargin)
+lohi_volts = nan(1,2);                                                      %Return NaNs if no appropriate reply is received.
+ttl_index = NaN;                                                            %Return a NaN index if no appropriate reply is received.
 if isempty(varargin)                                                        %If there's no optional input arguments...
     [data, code] = Vulintus_OTSC_Transaction(serialcon, req_code,...
-        'reply',{1,'single'; 1, 'uint16'; 1, 'single'});                    %Request the TTL pulse "off"/"on" values without optional input arguments.
+        'reply',{1, 'uint8'; 1,'single';...
+        1, 'uint16'; 1, 'uint8'; 1, 'single'});                             %Request the TTL pulse "off"/"on" values without optional input arguments.
 else                                                                        %Otherwise...
     [data, code] = Vulintus_OTSC_Transaction(serialcon, req_code,...
-        'reply',{1,'single'; 1, 'uint16'; 1, 'single'},...
+        'reply',{1, 'uint8'; 1,'single';...
+        1, 'uint16'; 1, 'uint8'; 1, 'single'},...
         varargin{:});                                                       %Request the TTL pulse "off"/"on" values with optional input arguments.
 end
 if isempty(data) || length(data) ~= 3 || isempty(code) || ...
         code ~= report_code(1) || data(2) ~= report_code(2)                 %If the TTL pulse levels weren't returned...
     warning(['%s: There was no response to the TTL I/O "off"/"on" '...
         'levels request!'], upper(mfilename));                              %Show a warning.
-    return                                                                  %Skip the rest of the function.
+else                                                                        %Otherwise...
+    lohi_volts = data([2,5]);                                               %Grab the "off"/"on" voltage values.
+    ttl_index = data(1);                                                    %Grab the TTL index.
 end
-lohi_volts = data([1,3]);                                                   %Return the "off"/"on" voltage values.
+varargout{1} = lohi_volts;                                                  %Return the "off"/"on" voltage values as the first output argument.
+varargout{2} = ttl_index;                                                   %Return the TTL index as the second output argument.
 
 
 %Set the current TTL pulse "on" and "off" values.
@@ -2647,8 +2786,11 @@ device_list = { 'MT-PP',...
                 'OT-NP',...
                 'OT-PR',...
                 'OT-LR',...
+                'PB-LD',...     % VPB Liquid Dispenser
+                'PB-PD',...     % VPB Pellet Dispenser
                 'ST-AP',...
-                'ST-VT'};
+                'ST-VT',...
+              };
 
 %If an cell arracy of connected devices was provided, match against the device lis.
 if nargin >= 2
@@ -2749,7 +2891,9 @@ function ctrl = Vulintus_OTSC_VPB_Monitoring_Functions(ctrl, varargin)
 
 
 %List the Vulintus devices that use these functions.
-device_list = {'OT-CC'};
+device_list = { 'OT-CC',...
+                'PB-LD',...     % VPB Liquid Dispenser
+              };
 
 %If an cell arracy of connected devices was provided, match against the device lis.
 if nargin >= 2
@@ -4386,7 +4530,7 @@ for i = 1:length(req_class_files)                                           %Ste
         class_files = which(req_class_files{i},'-all');                     %Check again to see if the class exists on the search path.
     end
     collated_txt = Vulintus_Load_Class_File_Text(req_class_files{i});       %Grab the text collated into the larger file.
-    if isempty(class_files)                                                 %If the classes weren't found...
+    if isempty(class_files) || strcmpi(class_files{1},'Not on MATLAB path') %If the classes weren't found...
         filename = fullfile(class_path,[req_class_files{i} '.m']);          %Set the filename.
         Vulintus_Cell_to_Text_File(collated_txt,filename);                  %Overwrite the existing class with the collated text.
     else                                                                    %Otherwise, if the classes were found...
@@ -4450,7 +4594,7 @@ function txt_cell = Vulintus_Text_File_To_Cell(file)
 
 if ~exist(file,'file')                                                      %If the specified file doesn't exist...
     error('ERROR IN %s: Specified file doesn''t exist!\n\t"%s"',...
-            upper(mfilename),v);                                            %Show an error.
+            upper(mfilename),file);                                         %Show an error.
 end
 
 [fid, errmsg] = fopen(file,'rt');                                           %Open the specified script for reading as text.
@@ -4479,7 +4623,7 @@ txt_cell(i+1:end) = [];                                                     %Kic
 %% ************************************************************************
 function txt = Vulintus_Load_Class_File_Text(class_file_name)
 
-%Programmatically generated: 2025-06-19, 12:55:02
+%Programmatically generated: 2026-05-14, 11:54:03
 
 switch class_file_name
 
@@ -4572,7 +4716,7 @@ switch class_file_name
 			'                case ''serial''                                               %Older, deprecated serial functions.';
 			'                    stream.serial_num_bytes = @serialcon.BytesAvailable;    %Number of bytes available.';
 			'                    stream.serial_read = ...';
-			'                        @(count)fread(serialcon,count,''uint8'');             %Read data from the serialport object.';
+			'                        @(count)fread(serialcon,count,''uint8'')'';            %Read data from the serialport object.';
 			'            end';
 			'';
 			'            stream.packet_info = Vulintus_Load_OTSC_Packet_Info;            %Load the OTSC packet specifications.';
@@ -4735,12 +4879,13 @@ switch class_file_name
 			'                    else                                                    %Otherwise, if there is a match...';
 			'                        codename = lookup_table{match_index, 1};            %Grab the packet name.';
 			'                        if strcmpi(codename,''UNKNOWN_BLOCK_ERROR'')          %If the code was for an unknown block error...';
-			'                            code = typecast(stream.buffer(src).peek(4),...';
-			'                                ''uint16'');                                  %Grab the unknown block code.';
+			'                            code = typecast(stream.buffer(src).peek(6),...';
+			'                                ''uint16'');                                  %Grab the unknown block code packet.';
 			'                            warning([''%s - Device %1.0f reported an ''...';
 			'                                ''unknown block error for OTSC block ''...';
-			'                                ''value 0x%04X.''],...';
-			'                                upper(mfilename), src, code(2));            %Show a warning message.';
+			'                                ''value 0x%04X preceded by a 0x%04X ''...';
+			'                                ''block.''],...';
+			'                                upper(mfilename), src, code(2), code(3));   %Show a warning message.';
 			'                        else                                                %Otherwise...';
 			'                            error([''ERROR IN %s: Need to finish coding ''...';
 			'                                ''for packet type ''''%s'''' (0x%04X) ''...';
@@ -5004,7 +5149,7 @@ switch class_file_name
 
 	case 'Vulintus_Load_OTSC_Codes'
 		txt =	{
-			'function serial_codes = Vulintus_Load_OTSC_Codes';
+			'function otsc_codes = Vulintus_Load_OTSC_Codes';
 			'';
 			'%	Vulintus_Load_OTSC_Codes.m';
 			'%';
@@ -5015,386 +5160,391 @@ switch class_file_name
 			'%	Library documentation:';
 			'%	https://github.com/Vulintus/OmniTrak_Serial_Communication';
 			'%';
-			'%	This function was programmatically generated: 2025-06-09, 07:45:59 (UTC)';
+			'%	This function was programmatically generated: 2025-10-05, 06:33:21 (UTC)';
 			'%';
 			'';
-			'serial_codes = dictionary;';
+			'otsc_codes = dictionary;';
 			'';
-			'serial_codes(''CLEAR'') = 0;                               % (0x0000) Reset communication with the device.';
-			'serial_codes(''REQ_COMM_VERIFY'') = 1;                     % (0x0001) Request verification that the connected device is using the OTSC serial code library.';
-			'serial_codes(''REQ_DEVICE_ID'') = 2;                       % (0x0002) Request the device type ID number.';
-			'serial_codes(''DEVICE_ID'') = 3;                           % (0x0003) Set/report the device type ID number.';
-			'serial_codes(''REQ_USERSET_ALIAS'') = 4;                   % (0x0004) Request the user-set name for the device.';
-			'serial_codes(''USERSET_ALIAS'') = 5;                       % (0x0005) Set/report the user-set name for the device.';
-			'serial_codes(''REQ_VULINTUS_ALIAS'') = 6;                  % (0x0006) Request the Vulintus alias (adjective/noun serial number) for the device.';
-			'serial_codes(''VULINTUS_ALIAS'') = 7;                      % (0x0007) Set/report the Vulintus alias (adjective/noun serial number) for the device.';
-			'serial_codes(''REQ_BOARD_VER'') = 8;                       % (0x0008) Request the circuit board version number.';
-			'serial_codes(''BOARD_VER'') = 9;                           % (0x0009) Report the circuit board version number.';
-			'serial_codes(''REQ_MAC_ADDR'') = 10;                       % (0x000A) Request the device MAC address.';
-			'serial_codes(''MAC_ADDR'') = 11;                           % (0x000B) Report the device MAC address.';
-			'serial_codes(''REQ_MCU_SERIALNUM'') = 12;                  % (0x000C) Request the device microcontroller serial number.';
-			'serial_codes(''MCU_SERIALNUM'') = 13;                      % (0x000D) Report the device microcontroller serial number.';
-			'serial_codes(''REQ_MAX_BAUDRATE'') = 14;                   % (0x000E) Request the maximum serial baud rate for supported by the device, in Hz.';
-			'serial_codes(''MAX_BAUDRATE'') = 15;                       % (0x000F) Report the maximum serial baud rate for supported by the device, in Hz.';
-			'serial_codes(''SET_BAUDRATE'') = 16;                       % (0x0010) Set the serial baud rate for the OTSC connection to the specified value, in Hz.';
-			'serial_codes(''REQ_PROGRAM_MODE'') = 17;                   % (0x0011) Request the current firmware program mode.';
-			'serial_codes(''PROGRAM_MODE'') = 18;                       % (0x0012) Set/report the current firmware program mode.';
-			'serial_codes(''REQ_MILLIS_MICROS'') = 19;                  % (0x0013) Request the microcontroller''s current millisecond and microsecond clock readings.';
-			'serial_codes(''MILLIS_MICROS'') = 20;                      % (0x0014) Report the microcontroller''s current millisecond and microsecond clock readings.';
-			'serial_codes(''FW_FILENAME'') = 21;                        % (0x0015) Report the firmware filename.';
-			'serial_codes(''REQ_FW_FILENAME'') = 22;                    % (0x0016) Request the firmware filename.';
-			'serial_codes(''FW_DATE'') = 23;                            % (0x0017) Report the firmware upload date.';
-			'serial_codes(''REQ_FW_DATE'') = 24;                        % (0x0018) Request the firmware upload date.';
-			'serial_codes(''FW_TIME'') = 25;                            % (0x0019) Report the firmware upload time.';
-			'serial_codes(''REQ_FW_TIME'') = 26;                        % (0x001A) Request the firmware upload time.';
+			'otsc_codes(''CLEAR'') = 0;                               % (0x0000) Reset communication with the device.';
+			'otsc_codes(''REQ_COMM_VERIFY'') = 1;                     % (0x0001) Request verification that the connected device is using the OTSC serial code library.';
+			'otsc_codes(''REQ_DEVICE_ID'') = 2;                       % (0x0002) Request the device type ID number.';
+			'otsc_codes(''DEVICE_ID'') = 3;                           % (0x0003) Set/report the device type ID number.';
+			'otsc_codes(''REQ_USERSET_ALIAS'') = 4;                   % (0x0004) Request the user-set name for the device.';
+			'otsc_codes(''USERSET_ALIAS'') = 5;                       % (0x0005) Set/report the user-set name for the device.';
+			'otsc_codes(''REQ_VULINTUS_ALIAS'') = 6;                  % (0x0006) Request the Vulintus alias (adjective/noun serial number) for the device.';
+			'otsc_codes(''VULINTUS_ALIAS'') = 7;                      % (0x0007) Set/report the Vulintus alias (adjective/noun serial number) for the device.';
+			'otsc_codes(''REQ_BOARD_VER'') = 8;                       % (0x0008) Request the circuit board version number.';
+			'otsc_codes(''BOARD_VER'') = 9;                           % (0x0009) Report the circuit board version number.';
+			'otsc_codes(''REQ_MAC_ADDR'') = 10;                       % (0x000A) Request the device MAC address.';
+			'otsc_codes(''MAC_ADDR'') = 11;                           % (0x000B) Report the device MAC address.';
+			'otsc_codes(''REQ_MCU_SERIALNUM'') = 12;                  % (0x000C) Request the device microcontroller serial number.';
+			'otsc_codes(''MCU_SERIALNUM'') = 13;                      % (0x000D) Report the device microcontroller serial number.';
+			'otsc_codes(''REQ_MAX_BAUDRATE'') = 14;                   % (0x000E) Request the maximum serial baud rate for supported by the device, in Hz.';
+			'otsc_codes(''MAX_BAUDRATE'') = 15;                       % (0x000F) Report the maximum serial baud rate for supported by the device, in Hz.';
+			'otsc_codes(''SET_BAUDRATE'') = 16;                       % (0x0010) Set the serial baud rate for the OTSC connection to the specified value, in Hz.';
+			'otsc_codes(''REQ_PROGRAM_MODE'') = 17;                   % (0x0011) Request the current firmware program mode.';
+			'otsc_codes(''PROGRAM_MODE'') = 18;                       % (0x0012) Set/report the current firmware program mode.';
+			'otsc_codes(''REQ_MILLIS_MICROS'') = 19;                  % (0x0013) Request the microcontroller''s current millisecond and microsecond clock readings.';
+			'otsc_codes(''MILLIS_MICROS'') = 20;                      % (0x0014) Report the microcontroller''s current millisecond and microsecond clock readings.';
+			'otsc_codes(''FW_FILENAME'') = 21;                        % (0x0015) Report the firmware filename.';
+			'otsc_codes(''REQ_FW_FILENAME'') = 22;                    % (0x0016) Request the firmware filename.';
+			'otsc_codes(''FW_DATE'') = 23;                            % (0x0017) Report the firmware upload date.';
+			'otsc_codes(''REQ_FW_DATE'') = 24;                        % (0x0018) Request the firmware upload date.';
+			'otsc_codes(''FW_TIME'') = 25;                            % (0x0019) Report the firmware upload time.';
+			'otsc_codes(''REQ_FW_TIME'') = 26;                        % (0x001A) Request the firmware upload time.';
 			'';
-			'serial_codes(''REQ_LIB_VER'') = 31;                        % (0x001F) Request the OTSC serial code library version.';
-			'serial_codes(''LIB_VER'') = 32;                            % (0x0020) Report the OTSC serial code library version.';
-			'serial_codes(''UNKNOWN_BLOCK_ERROR'') = 33;                % (0x0021) Indicate an unknown block code error.';
-			'serial_codes(''ERROR_INDICATOR'') = 34;                    % (0x0022) Indicate an error and send the associated error code.';
-			'serial_codes(''REBOOTING'') = 35;                          % (0x0023) Indicate that the device is rebooting.';
+			'otsc_codes(''REQ_LIB_VER'') = 31;                        % (0x001F) Request the OTSC serial code library version.';
+			'otsc_codes(''LIB_VER'') = 32;                            % (0x0020) Report the OTSC serial code library version.';
+			'otsc_codes(''UNKNOWN_BLOCK_ERROR'') = 33;                % (0x0021) Indicate an unknown block code error.';
+			'otsc_codes(''ERROR_INDICATOR'') = 34;                    % (0x0022) Indicate an error and send the associated error code.';
+			'otsc_codes(''REBOOTING'') = 35;                          % (0x0023) Indicate that the device is rebooting.';
 			'';
-			'serial_codes(''REQ_CUR_FEEDER'') = 50;                     % (0x0032) Request the current dispenser index.';
-			'serial_codes(''CUR_FEEDER'') = 51;                         % (0x0033) Set/report the current dispenser index.';
-			'serial_codes(''REQ_FEED_TRIG_DUR'') = 52;                  % (0x0034) Request the current dispenser trigger duration, in milliseconds.';
-			'serial_codes(''FEED_TRIG_DUR'') = 53;                      % (0x0035) Set/report the current dispenser trigger duration, in milliseconds.';
-			'serial_codes(''TRIGGER_FEEDER'') = 54;                     % (0x0036) Trigger feeding on the currently-selected dispenser.';
-			'serial_codes(''STOP_FEED'') = 55;                          % (0x0037) Immediately shut off any active feeding trigger.';
-			'serial_codes(''DISPENSE_FIRMWARE'') = 56;                  % (0x0038) Report that a feeding was automatically triggered in the device firmware.';
+			'otsc_codes(''REQ_CUR_FEEDER'') = 50;                     % (0x0032) Request the current dispenser index.';
+			'otsc_codes(''CUR_FEEDER'') = 51;                         % (0x0033) Set/report the current dispenser index.';
+			'otsc_codes(''REQ_FEED_TRIG_DUR'') = 52;                  % (0x0034) Request the current dispenser trigger duration, in milliseconds.';
+			'otsc_codes(''FEED_TRIG_DUR'') = 53;                      % (0x0035) Set/report the current dispenser trigger duration, in milliseconds.';
+			'otsc_codes(''TRIGGER_FEEDER'') = 54;                     % (0x0036) Trigger feeding on the currently-selected dispenser.';
+			'otsc_codes(''STOP_FEED'') = 55;                          % (0x0037) Immediately shut off any active feeding trigger.';
+			'otsc_codes(''DISPENSE_FIRMWARE'') = 56;                  % (0x0038) Report that a feeding was automatically triggered in the device firmware.';
 			'';
-			'serial_codes(''POS_ZERO'') = 58;                           % (0x003A) Set the current position as "home" (i.e. zero millimeters/degrees), without doing a homing routine.';
-			'serial_codes(''MODULE_REHOME'') = 59;                      % (0x003B) Initiate the homing routine on the module.';
-			'serial_codes(''HOMING_COMPLETE'') = 60;                    % (0x003C) Indicate that a module''s homing routine is complete.';
-			'serial_codes(''MOVEMENT_START'') = 61;                     % (0x003D) Indicate that a linear/rotary movement has started.';
-			'serial_codes(''MOVEMENT_COMPLETE'') = 62;                  % (0x003E) Indicate that a linear/rotary movement is complete.';
-			'serial_codes(''MODULE_RETRACT'') = 63;                     % (0x003F) Retract the module movement to it''s starting or base position.';
-			'serial_codes(''REQ_TARGET_POS_UNITS'') = 64;               % (0x0040) Request the current target position of a module movement, in millimeters or degrees.';
-			'serial_codes(''TARGET_POS_UNITS'') = 65;                   % (0x0041) Set/report the target position of a module movement, in millimeters or degrees.';
-			'serial_codes(''REQ_CUR_POS_UNITS'') = 66;                  % (0x0042) Request the current  position of the module movement, in millimeters or degrees.';
-			'serial_codes(''CUR_POS_UNITS'') = 67;                      % (0x0043) Set/report the current position of the module movement, in millimeters or degrees.';
-			'serial_codes(''REQ_MIN_POS_UNITS'') = 68;                  % (0x0044) Request the current minimum position of a module movement, in millimeters or degrees.';
-			'serial_codes(''MIN_POS_UNITS'') = 69;                      % (0x0045) Set/report the current minimum position of a module movement, in millimeters or degrees.';
-			'serial_codes(''REQ_MAX_POS_UNITS'') = 70;                  % (0x0046) Request the current maximum position of a module movement, in millimeters or degrees.';
-			'serial_codes(''MAX_POS_UNITS'') = 71;                      % (0x0047) Set/report the current maximum position of a module movement, in millimeters or degrees.';
-			'serial_codes(''REQ_MIN_SPEED_UNITS_S'') = 72;              % (0x0048) Request the current minimum speed (i.e. motor start speed), in mm/s or deg/s.';
-			'serial_codes(''MIN_SPEED_UNITS_S'') = 73;                  % (0x0049) Set/report the current minimum speed (i.e. motor start speed), in mm/s or deg/s.';
-			'serial_codes(''ROTARY_MOVEMENT_START'') = 74;              % (0x004A) Indicate that a rotary movement has started.';
-			'serial_codes(''ROTARY_MOVEMENT_COMPLETE'') = 75;           % (0x004B) Indicate that a rotary movement is complete.';
+			'otsc_codes(''POS_ZERO'') = 58;                           % (0x003A) Set the current position as "home" (i.e. zero millimeters/degrees), without doing a homing routine.';
+			'otsc_codes(''MODULE_REHOME'') = 59;                      % (0x003B) Initiate the homing routine on the module.';
+			'otsc_codes(''HOMING_COMPLETE'') = 60;                    % (0x003C) Indicate that a module''s homing routine is complete.';
+			'otsc_codes(''MOVEMENT_START'') = 61;                     % (0x003D) Indicate that a linear/rotary movement has started.';
+			'otsc_codes(''MOVEMENT_COMPLETE'') = 62;                  % (0x003E) Indicate that a linear/rotary movement is complete.';
+			'otsc_codes(''MODULE_RETRACT'') = 63;                     % (0x003F) Retract the module movement to it''s starting or base position.';
+			'otsc_codes(''REQ_TARGET_POS_UNITS'') = 64;               % (0x0040) Request the current target position of a module movement, in millimeters or degrees.';
+			'otsc_codes(''TARGET_POS_UNITS'') = 65;                   % (0x0041) Set/report the target position of a module movement, in millimeters or degrees.';
+			'otsc_codes(''REQ_CUR_POS_UNITS'') = 66;                  % (0x0042) Request the current  position of the module movement, in millimeters or degrees.';
+			'otsc_codes(''CUR_POS_UNITS'') = 67;                      % (0x0043) Set/report the current position of the module movement, in millimeters or degrees.';
+			'otsc_codes(''REQ_MIN_POS_UNITS'') = 68;                  % (0x0044) Request the current minimum position of a module movement, in millimeters or degrees.';
+			'otsc_codes(''MIN_POS_UNITS'') = 69;                      % (0x0045) Set/report the current minimum position of a module movement, in millimeters or degrees.';
+			'otsc_codes(''REQ_MAX_POS_UNITS'') = 70;                  % (0x0046) Request the current maximum position of a module movement, in millimeters or degrees.';
+			'otsc_codes(''MAX_POS_UNITS'') = 71;                      % (0x0047) Set/report the current maximum position of a module movement, in millimeters or degrees.';
+			'otsc_codes(''REQ_MIN_SPEED_UNITS_S'') = 72;              % (0x0048) Request the current minimum speed (i.e. motor start speed), in mm/s or deg/s.';
+			'otsc_codes(''MIN_SPEED_UNITS_S'') = 73;                  % (0x0049) Set/report the current minimum speed (i.e. motor start speed), in mm/s or deg/s.';
+			'otsc_codes(''ROTARY_MOVEMENT_START'') = 74;              % (0x004A) Indicate that a rotary movement has started.';
+			'otsc_codes(''ROTARY_MOVEMENT_COMPLETE'') = 75;           % (0x004B) Indicate that a rotary movement is complete.';
 			'';
-			'serial_codes(''REQ_TRQ_STALL_IGNORE'') = 78;               % (0x004E) Request the current number of steps to ignore before monitoring for stalls.';
-			'serial_codes(''TRQ_STALL_IGNORE'') = 79;                   % (0x004F) Set/report the current number of steps to ignore before monitoring for stalls.';
-			'serial_codes(''REQ_MAX_SPEED_UNITS_S'') = 80;              % (0x0050) Request the current maximum speed, in mm/s or deg/s.';
-			'serial_codes(''MAX_SPEED_UNITS_S'') = 81;                  % (0x0051) Set/report the current maximum speed, in mm/s or deg/s.';
-			'serial_codes(''REQ_ACCEL_UNITS_S2'') = 82;                 % (0x0052) Request the current movement acceleration, in mm/s^2 or deg/s^2^2.';
-			'serial_codes(''ACCEL_UNITS_S2'') = 83;                     % (0x0053) Set/report the current movement acceleration, in mm/s^2 or deg/s^2^2.';
-			'serial_codes(''REQ_MOTOR_CURRENT'') = 84;                  % (0x0054) Request the current motor current setting, in milliamps.';
-			'serial_codes(''MOTOR_CURRENT'') = 85;                      % (0x0055) Set/report the current motor current setting, in milliamps.';
-			'serial_codes(''REQ_MAX_MOTOR_CURRENT'') = 86;              % (0x0056) Request the maximum possible motor current, in milliamps.';
-			'serial_codes(''MAX_MOTOR_CURRENT'') = 87;                  % (0x0057) Set/report the maximum possible motor current, in milliamps.';
-			'serial_codes(''REQ_FW_STALL_DETECTION'') = 88;             % (0x0058) Request the firmware-based stall detection setting, on or off.';
-			'serial_codes(''FW_STALL_DETECTION'') = 89;                 % (0x0059) Set/report the firmware-based stall detection setting, on or off.';
-			'serial_codes(''REQ_HW_STALL_DETECTION'') = 90;             % (0x005A) Request the hardware-based stall detection setting, on or off.';
-			'serial_codes(''HW_STALL_DETECTION'') = 91;                 % (0x005B) Set/report the hardware-based stall detection setting, on or off.';
-			'serial_codes(''REQ_STALL_THRESH'') = 92;                   % (0x005C) Request the current stall threshold, 0-4095.';
-			'serial_codes(''STALL_THRESH'') = 93;                       % (0x005D) Set/report the current stall threshold, 0-4095.';
-			'serial_codes(''REQ_TRQ_SCALING'') = 94;                    % (0x005E) Request the torque count scaling setting, 1x or 8x.';
-			'serial_codes(''TRQ_SCALING'') = 95;                        % (0x005F) Set/report the torque count scaling setting, 1x or 8x.';
-			'serial_codes(''REQ_TRQ_COUNT'') = 96;                      % (0x0060) Request the current torque count, 0-4095.';
-			'serial_codes(''TRQ_COUNT'') = 97;                          % (0x0061) Set/report the current torque count, 0-4095.';
-			'serial_codes(''MOTOR_STALL'') = 98;                        % (0x0062) Report a motor stall.';
-			'serial_codes(''MOTOR_FAULT'') = 99;                        % (0x0063) Report a motor fault, other than a stall (i.e. undervoltage, overcurrent, overtemperature).';
+			'otsc_codes(''REQ_TRQ_STALL_IGNORE'') = 78;               % (0x004E) Request the current number of steps to ignore before monitoring for stalls.';
+			'otsc_codes(''TRQ_STALL_IGNORE'') = 79;                   % (0x004F) Set/report the current number of steps to ignore before monitoring for stalls.';
+			'otsc_codes(''REQ_MAX_SPEED_UNITS_S'') = 80;              % (0x0050) Request the current maximum speed, in mm/s or deg/s.';
+			'otsc_codes(''MAX_SPEED_UNITS_S'') = 81;                  % (0x0051) Set/report the current maximum speed, in mm/s or deg/s.';
+			'otsc_codes(''REQ_ACCEL_UNITS_S2'') = 82;                 % (0x0052) Request the current movement acceleration, in mm/s^2 or deg/s^2^2.';
+			'otsc_codes(''ACCEL_UNITS_S2'') = 83;                     % (0x0053) Set/report the current movement acceleration, in mm/s^2 or deg/s^2^2.';
+			'otsc_codes(''REQ_MOTOR_CURRENT'') = 84;                  % (0x0054) Request the current motor current setting, in milliamps.';
+			'otsc_codes(''MOTOR_CURRENT'') = 85;                      % (0x0055) Set/report the current motor current setting, in milliamps.';
+			'otsc_codes(''REQ_MAX_MOTOR_CURRENT'') = 86;              % (0x0056) Request the maximum possible motor current, in milliamps.';
+			'otsc_codes(''MAX_MOTOR_CURRENT'') = 87;                  % (0x0057) Set/report the maximum possible motor current, in milliamps.';
+			'otsc_codes(''REQ_FW_STALL_DETECTION'') = 88;             % (0x0058) Request the firmware-based stall detection setting, on or off.';
+			'otsc_codes(''FW_STALL_DETECTION'') = 89;                 % (0x0059) Set/report the firmware-based stall detection setting, on or off.';
+			'otsc_codes(''REQ_HW_STALL_DETECTION'') = 90;             % (0x005A) Request the hardware-based stall detection setting, on or off.';
+			'otsc_codes(''HW_STALL_DETECTION'') = 91;                 % (0x005B) Set/report the hardware-based stall detection setting, on or off.';
+			'otsc_codes(''REQ_STALL_THRESH'') = 92;                   % (0x005C) Request the current stall threshold, 0-4095.';
+			'otsc_codes(''STALL_THRESH'') = 93;                       % (0x005D) Set/report the current stall threshold, 0-4095.';
+			'otsc_codes(''REQ_TRQ_SCALING'') = 94;                    % (0x005E) Request the torque count scaling setting, 1x or 8x.';
+			'otsc_codes(''TRQ_SCALING'') = 95;                        % (0x005F) Set/report the torque count scaling setting, 1x or 8x.';
+			'otsc_codes(''REQ_TRQ_COUNT'') = 96;                      % (0x0060) Request the current torque count, 0-4095.';
+			'otsc_codes(''TRQ_COUNT'') = 97;                          % (0x0061) Set/report the current torque count, 0-4095.';
+			'otsc_codes(''MOTOR_STALL'') = 98;                        % (0x0062) Report a motor stall.';
+			'otsc_codes(''MOTOR_FAULT'') = 99;                        % (0x0063) Report a motor fault, other than a stall (i.e. undervoltage, overcurrent, overtemperature).';
 			'';
-			'serial_codes(''STREAM_PERIOD'') = 101;                     % (0x0065) Set/report the current streaming period, in milliseconds.';
-			'serial_codes(''REQ_STREAM_PERIOD'') = 102;                 % (0x0066) Request the current streaming period, in milliseconds.';
-			'serial_codes(''STREAM_ENABLE'') = 103;                     % (0x0067) Enable/disable streaming from the device.';
+			'otsc_codes(''STREAM_PERIOD'') = 101;                     % (0x0065) Set/report the current streaming period, in milliseconds.';
+			'otsc_codes(''REQ_STREAM_PERIOD'') = 102;                 % (0x0066) Request the current streaming period, in milliseconds.';
+			'otsc_codes(''STREAM_ENABLE'') = 103;                     % (0x0067) Enable/disable streaming from the device.';
 			'';
-			'serial_codes(''AP_DIST_X'') = 110;                         % (0x006E) Set/report the autopositioner x position, in millimeters.';
-			'serial_codes(''REQ_AP_DIST_X'') = 111;                     % (0x006F) Request the current autopositioner x position, in millimeters.';
+			'otsc_codes(''AP_DIST_X'') = 110;                         % (0x006E) Set/report the autopositioner x position, in millimeters.';
+			'otsc_codes(''REQ_AP_DIST_X'') = 111;                     % (0x006F) Request the current autopositioner x position, in millimeters.';
 			'';
-			'serial_codes(''READ_FROM_NVM'') = 120;                     % (0x0078) Read bytes from non-volatile memory.';
-			'serial_codes(''WRITE_TO_NVM'') = 121;                      % (0x0079) Write bytes to non-volatile memory.';
-			'serial_codes(''REQ_NVM_SIZE'') = 122;                      % (0x007A) Request the non-volatile memory size.';
-			'serial_codes(''NVM_SIZE'') = 123;                          % (0x007B) Report the non-volatile memory size.';
+			'otsc_codes(''READ_FROM_NVM'') = 120;                     % (0x0078) Read bytes from non-volatile memory.';
+			'otsc_codes(''WRITE_TO_NVM'') = 121;                      % (0x0079) Write bytes to non-volatile memory.';
+			'otsc_codes(''REQ_NVM_SIZE'') = 122;                      % (0x007A) Request the non-volatile memory size.';
+			'otsc_codes(''NVM_SIZE'') = 123;                          % (0x007B) Report the non-volatile memory size.';
 			'';
-			'serial_codes(''DISPENSER_READY'') = 144;                   % (0x0090) Report that a dispenser has prepared a reward (i.e. a pellet) for dispensing.';
-			'serial_codes(''DISPENSER_RELOAD'') = 145;                  % (0x0091) Command the current dispenser to prepare a reward for dispensing (i.e. reload a pellet).';
-			'serial_codes(''DISPENSER_EMPTY'') = 146;                   % (0x0092) Report that a dispenser is empty or cannot detect an available reward.';
-			'serial_codes(''PELLET_DETECT_ENABLE'') = 147;              % (0x0093) Enable/disable pellet detection.';
-			'serial_codes(''REQ_MAX_RELOAD_ATTEMPTS'') = 148;           % (0x0094) Request the current maximum number of reload attempts.';
-			'serial_codes(''MAX_RELOAD_ATTEMPTS'') = 149;               % (0x0095) Set/report the current maximum number of reload attempts.';
+			'otsc_codes(''DISPENSER_READY'') = 144;                   % (0x0090) Report that a dispenser has prepared a reward (i.e. a pellet) for dispensing.';
+			'otsc_codes(''DISPENSER_RELOAD'') = 145;                  % (0x0091) Command the current dispenser to prepare a reward for dispensing (i.e. reload a pellet).';
+			'otsc_codes(''DISPENSER_EMPTY'') = 146;                   % (0x0092) Report that a dispenser is empty or cannot detect an available reward.';
+			'otsc_codes(''PELLET_DETECT_ENABLE'') = 147;              % (0x0093) Enable/disable pellet detection.';
+			'otsc_codes(''REQ_MAX_RELOAD_ATTEMPTS'') = 148;           % (0x0094) Request the current maximum number of reload attempts.';
+			'otsc_codes(''MAX_RELOAD_ATTEMPTS'') = 149;               % (0x0095) Set/report the current maximum number of reload attempts.';
 			'';
-			'serial_codes(''PLAY_TONE'') = 256;                         % (0x0100) Play the specified tone.';
-			'serial_codes(''STOP_TONE'') = 257;                         % (0x0101) Stop any currently playing tone.';
-			'serial_codes(''REQ_NUM_TONES'') = 258;                     % (0x0102) Request the number of queueable tones.';
-			'serial_codes(''NUM_TONES'') = 259;                         % (0x0103) Report the number of queueable tones.';
-			'serial_codes(''TONE_INDEX'') = 260;                        % (0x0104) Set/report the current tone index.';
-			'serial_codes(''REQ_TONE_INDEX'') = 261;                    % (0x0105) Request the current tone index.';
-			'serial_codes(''TONE_FREQ'') = 262;                         % (0x0106) Set/report the frequency of the current tone, in Hertz.';
-			'serial_codes(''REQ_TONE_FREQ'') = 263;                     % (0x0107) Request the frequency of the current tone, in Hertz.';
-			'serial_codes(''TONE_DUR'') = 264;                          % (0x0108) Set/report the duration of the current tone, in milliseconds.';
-			'serial_codes(''REQ_TONE_DUR'') = 265;                      % (0x0109) Return the duration of the current tone in milliseconds.';
-			'serial_codes(''TONE_VOLUME'') = 266;                       % (0x010A) Set/report the volume of the current tone, normalized from 0 to 1.';
-			'serial_codes(''REQ_TONE_VOLUME'') = 267;                   % (0x010B) Request the volume of the current tone, normalized from 0 to 1.';
+			'otsc_codes(''PLAY_TONE'') = 256;                         % (0x0100) Play the specified tone.';
+			'otsc_codes(''STOP_TONE'') = 257;                         % (0x0101) Stop any currently playing tone.';
+			'otsc_codes(''REQ_NUM_TONES'') = 258;                     % (0x0102) Request the number of queueable tones.';
+			'otsc_codes(''NUM_TONES'') = 259;                         % (0x0103) Report the number of queueable tones.';
+			'otsc_codes(''TONE_INDEX'') = 260;                        % (0x0104) Set/report the current tone index.';
+			'otsc_codes(''REQ_TONE_INDEX'') = 261;                    % (0x0105) Request the current tone index.';
+			'otsc_codes(''TONE_FREQ'') = 262;                         % (0x0106) Set/report the frequency of the current tone, in Hertz.';
+			'otsc_codes(''REQ_TONE_FREQ'') = 263;                     % (0x0107) Request the frequency of the current tone, in Hertz.';
+			'otsc_codes(''TONE_DUR'') = 264;                          % (0x0108) Set/report the duration of the current tone, in milliseconds.';
+			'otsc_codes(''REQ_TONE_DUR'') = 265;                      % (0x0109) Return the duration of the current tone in milliseconds.';
+			'otsc_codes(''TONE_VOLUME'') = 266;                       % (0x010A) Set/report the volume of the current tone, normalized from 0 to 1.';
+			'otsc_codes(''REQ_TONE_VOLUME'') = 267;                   % (0x010B) Request the volume of the current tone, normalized from 0 to 1.';
 			'';
-			'serial_codes(''INDICATOR_LEDS_ON'') = 352;                 % (0x0160) Set/report whether the indicator LEDs are turned on (0 = off, 1 = on).';
+			'otsc_codes(''INDICATOR_LEDS_ON'') = 352;                 % (0x0160) Set/report whether the indicator LEDs are turned on (0 = off, 1 = on).';
 			'';
-			'serial_codes(''CUE_LIGHT_ON'') = 384;                      % (0x0180) Turn on the specified cue light.';
-			'serial_codes(''CUE_LIGHT_OFF'') = 385;                     % (0x0181) Turn off any currently-showing cue light.';
-			'serial_codes(''NUM_CUE_LIGHTS'') = 386;                    % (0x0182) Report the number of queueable cue lights.';
-			'serial_codes(''REQ_NUM_CUE_LIGHTS'') = 387;                % (0x0183) Request the number of queueable cue lights.';
-			'serial_codes(''CUE_LIGHT_INDEX'') = 388;                   % (0x0184) Set/report the current cue light index.';
-			'serial_codes(''REQ_CUE_LIGHT_INDEX'') = 389;               % (0x0185) Request the current cue light index.';
-			'serial_codes(''CUE_LIGHT_RGBW'') = 390;                    % (0x0186) Set/report the RGBW values for the current cue light (0-255).';
-			'serial_codes(''REQ_CUE_LIGHT_RGBW'') = 391;                % (0x0187) Request the RGBW values for the current cue light (0-255).';
-			'serial_codes(''CUE_LIGHT_DUR'') = 392;                     % (0x0188) Set/report the current cue light duration, in milliseconds.';
-			'serial_codes(''REQ_CUE_LIGHT_DUR'') = 393;                 % (0x0189) Request the current cue light duration, in milliseconds.';
-			'serial_codes(''CUE_LIGHT_MASK'') = 394;                    % (0x018A) Set/report the cue light enable bitmask.';
-			'serial_codes(''REQ_CUE_LIGHT_MASK'') = 395;                % (0x018B) Request the cue light enable bitmask.';
-			'serial_codes(''CUE_LIGHT_QUEUE_SIZE'') = 396;              % (0x018C) Set/report the number of queueable cue light stimuli.';
-			'serial_codes(''REQ_CUE_LIGHT_QUEUE_SIZE'') = 397;          % (0x018D) Request the number of queueable cue light stimuli.';
-			'serial_codes(''CUE_LIGHT_QUEUE_INDEX'') = 398;             % (0x018E) Set/report the current cue light queue index.';
-			'serial_codes(''REQ_CUE_LIGHT_QUEUE_INDEX'') = 399;         % (0x018F) Request the current cue light queue index.';
+			'otsc_codes(''CUE_LIGHT_ON'') = 384;                      % (0x0180) Turn on the specified cue light.';
+			'otsc_codes(''CUE_LIGHT_OFF'') = 385;                     % (0x0181) Turn off any currently-showing cue light.';
+			'otsc_codes(''NUM_CUE_LIGHTS'') = 386;                    % (0x0182) Report the number of queueable cue lights.';
+			'otsc_codes(''REQ_NUM_CUE_LIGHTS'') = 387;                % (0x0183) Request the number of queueable cue lights.';
+			'otsc_codes(''CUE_LIGHT_INDEX'') = 388;                   % (0x0184) Set/report the current cue light index.';
+			'otsc_codes(''REQ_CUE_LIGHT_INDEX'') = 389;               % (0x0185) Request the current cue light index.';
+			'otsc_codes(''CUE_LIGHT_RGBW'') = 390;                    % (0x0186) Set/report the RGBW values for the current cue light (0-255).';
+			'otsc_codes(''REQ_CUE_LIGHT_RGBW'') = 391;                % (0x0187) Request the RGBW values for the current cue light (0-255).';
+			'otsc_codes(''CUE_LIGHT_DUR'') = 392;                     % (0x0188) Set/report the current cue light duration, in milliseconds.';
+			'otsc_codes(''REQ_CUE_LIGHT_DUR'') = 393;                 % (0x0189) Request the current cue light duration, in milliseconds.';
+			'otsc_codes(''CUE_LIGHT_ON_MASK'') = 394;                 % (0x018A) Turn on the cue lights specified by the bits in a 16-bit bitmask.';
+			'otsc_codes(''REQ_CUE_LIGHT_MASK'') = 395;                % (0x018B) Request the cue light enable bitmask. *DEPRECATED*';
+			'otsc_codes(''CUE_LIGHT_QUEUE_SIZE'') = 396;              % (0x018C) Set/report the number of queueable cue light stimuli.';
+			'otsc_codes(''REQ_CUE_LIGHT_QUEUE_SIZE'') = 397;          % (0x018D) Request the number of queueable cue light stimuli.';
+			'otsc_codes(''CUE_LIGHT_QUEUE_INDEX'') = 398;             % (0x018E) Set/report the current cue light queue index. *DEPRECATED*';
+			'otsc_codes(''REQ_CUE_LIGHT_QUEUE_INDEX'') = 399;         % (0x018F) Request the current cue light queue index. *DEPRECATED*';
 			'';
-			'serial_codes(''CAGE_LIGHT_ON'') = 416;                     % (0x01A0) Turn on the overhead cage light.';
-			'serial_codes(''CAGE_LIGHT_OFF'') = 417;                    % (0x01A1) Turn off the overhead cage light.';
-			'serial_codes(''CAGE_LIGHT_RGBW'') = 418;                   % (0x01A2) Set/report the RGBW values for the overhead cage light (0-255).';
-			'serial_codes(''REQ_CAGE_LIGHT_RGBW'') = 419;               % (0x01A3) Request the RGBW values for the overhead cage light (0-255).';
-			'serial_codes(''CAGE_LIGHT_DUR'') = 420;                    % (0x01A4) Set/report the overhead cage light duration, in milliseconds.';
-			'serial_codes(''REQ_CAGE_LIGHT_DUR'') = 421;                % (0x01A5) Request the overhead cage light duration, in milliseconds.';
+			'otsc_codes(''CAGE_LIGHT_ON'') = 416;                     % (0x01A0) Turn on the overhead cage light.';
+			'otsc_codes(''CAGE_LIGHT_OFF'') = 417;                    % (0x01A1) Turn off the overhead cage light.';
+			'otsc_codes(''CAGE_LIGHT_RGBW'') = 418;                   % (0x01A2) Set/report the RGBW values for the overhead cage light (0-255).';
+			'otsc_codes(''REQ_CAGE_LIGHT_RGBW'') = 419;               % (0x01A3) Request the RGBW values for the overhead cage light (0-255).';
+			'otsc_codes(''CAGE_LIGHT_DUR'') = 420;                    % (0x01A4) Set/report the overhead cage light duration, in milliseconds.';
+			'otsc_codes(''REQ_CAGE_LIGHT_DUR'') = 421;                % (0x01A5) Request the overhead cage light duration, in milliseconds.';
 			'';
-			'serial_codes(''POKE_BITMASK'') = 512;                      % (0x0200) Set/report the current nosepoke status bitmask.';
-			'serial_codes(''REQ_POKE_BITMASK'') = 513;                  % (0x0201) Request the current nosepoke status bitmask.';
-			'serial_codes(''POKE_ADC'') = 514;                          % (0x0202) Report the current nosepoke analog reading (returns both the filtered and raw value).';
-			'serial_codes(''REQ_POKE_ADC'') = 515;                      % (0x0203) Request the current nosepoke analog reading.';
-			'serial_codes(''POKE_MINMAX'') = 516;                       % (0x0204) Set/report the minimum and maximum ADC values of the nosepoke infrared sensor history, in ADC ticks.';
-			'serial_codes(''REQ_POKE_MINMAX'') = 517;                   % (0x0205) Request the minimum and maximum ADC values of the nosepoke infrared sensor history, in ADC ticks.';
-			'serial_codes(''POKE_THRESH_FL'') = 518;                    % (0x0206) Set/report the current nosepoke threshold setting, normalized from 0 to 1.';
-			'serial_codes(''REQ_POKE_THRESH_FL'') = 519;                % (0x0207) Request the current nosepoke threshold setting, normalized from 0 to 1.';
-			'serial_codes(''POKE_THRESH_ADC'') = 520;                   % (0x0208) Set/report the current nosepoke threshold setting, in ADC ticks.';
-			'serial_codes(''REQ_POKE_THRESH_ADC'') = 521;               % (0x0209) Request the current nosepoke auto-threshold setting, in ADC ticks.';
-			'serial_codes(''POKE_THRESH_AUTO'') = 522;                  % (0x020A) Set/report the current nosepoke auto-thresholding setting (0 = fixed, 1 = autoset).';
-			'serial_codes(''REQ_POKE_THRESH_AUTO'') = 523;              % (0x020B) Request the current nosepoke auto-thresholding setting (0 = fixed, 1 = autoset).';
-			'serial_codes(''POKE_RESET'') = 524;                        % (0x020C) Reset the nosepoke infrared sensor history.';
-			'serial_codes(''POKE_INDEX'') = 525;                        % (0x020D) Set/report the current nosepoke index for multi-nosepoke modules.';
-			'serial_codes(''REQ_POKE_INDEX'') = 526;                    % (0x020E) Request the current nosepoke index for multi-nosepoke modules.';
-			'serial_codes(''POKE_MIN_RANGE'') = 527;                    % (0x020F) Set/report the minimum signal range for positive detection with the current nosepoke, in ADC ticks.';
-			'serial_codes(''REQ_POKE_MIN_RANGE'') = 528;                % (0x0210) Request the minimum signal range for positive detection with the current nosepoke, in ADC ticks.';
-			'serial_codes(''POKE_LOWPASS_CUTOFF'') = 529;               % (0x0211) Set/report the current nosepoke sensor low-pass filter cutoff frequency, in Hz.';
-			'serial_codes(''REQ_POKE_LOWPASS_CUTOFF'') = 530;           % (0x0212) Request the current nosepoke sensor low-pass filter cutoff frequency, in Hz.';
+			'otsc_codes(''IR_DET_BITMASK'') = 512;                    % (0x0200) Set/report the current nosepoke status bitmask.';
+			'otsc_codes(''REQ_IR_DET_BITMASK'') = 513;                % (0x0201) Request the current nosepoke status bitmask.';
+			'otsc_codes(''IR_DET_ADC'') = 514;                        % (0x0202) Report the current nosepoke analog reading (returns both the filtered and raw value).';
+			'otsc_codes(''REQ_IR_DET_ADC'') = 515;                    % (0x0203) Request the current nosepoke analog reading.';
+			'otsc_codes(''IR_DET_MINMAX'') = 516;                     % (0x0204) Set/report the minimum and maximum ADC values of the nosepoke infrared sensor history, in ADC ticks.';
+			'otsc_codes(''REQ_IR_DET_MINMAX'') = 517;                 % (0x0205) Request the minimum and maximum ADC values of the nosepoke infrared sensor history, in ADC ticks.';
+			'otsc_codes(''IR_DET_THRESH_FL'') = 518;                  % (0x0206) Set/report the current nosepoke threshold setting, normalized from 0 to 1.';
+			'otsc_codes(''REQ_IR_DET_THRESH_FL'') = 519;              % (0x0207) Request the current nosepoke threshold setting, normalized from 0 to 1.';
+			'otsc_codes(''IR_DET_THRESH_ADC'') = 520;                 % (0x0208) Set/report the current nosepoke threshold setting, in ADC ticks.';
+			'otsc_codes(''REQ_IR_DET_THRESH_ADC'') = 521;             % (0x0209) Request the current nosepoke auto-threshold setting, in ADC ticks.';
+			'otsc_codes(''IR_DET_THRESH_AUTO'') = 522;                % (0x020A) Set/report the current nosepoke auto-thresholding setting (0 = fixed, 1 = autoset).';
+			'otsc_codes(''REQ_IR_DET_THRESH_AUTO'') = 523;            % (0x020B) Request the current nosepoke auto-thresholding setting (0 = fixed, 1 = autoset).';
+			'otsc_codes(''IR_DET_RESET'') = 524;                      % (0x020C) Reset the nosepoke infrared sensor history.';
+			'otsc_codes(''IR_DET_INDEX'') = 525;                      % (0x020D) Set/report the current nosepoke index for multi-nosepoke modules.';
+			'otsc_codes(''REQ_IR_DET_INDEX'') = 526;                  % (0x020E) Request the current nosepoke index for multi-nosepoke modules.';
+			'otsc_codes(''IR_DET_MIN_RANGE'') = 527;                  % (0x020F) Set/report the minimum signal range for positive detection with the current nosepoke, in ADC ticks.';
+			'otsc_codes(''REQ_IR_DET_MIN_RANGE'') = 528;              % (0x0210) Request the minimum signal range for positive detection with the current nosepoke, in ADC ticks.';
+			'otsc_codes(''IR_DET_LOWPASS_CUTOFF'') = 529;             % (0x0211) Set/report the current nosepoke sensor low-pass filter cutoff frequency, in Hz.';
+			'otsc_codes(''REQ_IR_DET_LOWPASS_CUTOFF'') = 530;         % (0x0212) Request the current nosepoke sensor low-pass filter cutoff frequency, in Hz.';
 			'';
-			'serial_codes(''CAPSENSE_BITMASK'') = 624;                  % (0x0270) Set/report the current capacitive sensor status bitmask.';
-			'serial_codes(''REQ_CAPSENSE_BITMASK'') = 625;              % (0x0271) Request the current capacitive sensor status bitmask.';
-			'serial_codes(''CAPSENSE_INDEX'') = 626;                    % (0x0272) Set/report the current capacitive sensor index.';
-			'serial_codes(''REQ_CAPSENSE_INDEX'') = 627;                % (0x0273) Request the current capacitive sensor index.';
-			'serial_codes(''CAPSENSE_SENSITIVITY'') = 628;              % (0x0274) Set/report the current capacitive sensor sensitivity setting, normalized from 0 to 1.';
-			'serial_codes(''REQ_CAPSENSE_SENSITIVITY'') = 629;          % (0x0275) Request the current capacitive sensor sensitivity setting, normalized from 0 to 1.';
-			'serial_codes(''CAPSENSE_RESET'') = 630;                    % (0x0276) Reset the current capacitance sensor history.';
+			'otsc_codes(''CAPSENSE_BITMASK'') = 624;                  % (0x0270) Set/report the current capacitive sensor status bitmask.';
+			'otsc_codes(''REQ_CAPSENSE_BITMASK'') = 625;              % (0x0271) Request the current capacitive sensor status bitmask.';
+			'otsc_codes(''CAPSENSE_INDEX'') = 626;                    % (0x0272) Set/report the current capacitive sensor index.';
+			'otsc_codes(''REQ_CAPSENSE_INDEX'') = 627;                % (0x0273) Request the current capacitive sensor index.';
+			'otsc_codes(''CAPSENSE_SENSITIVITY'') = 628;              % (0x0274) Set/report the current capacitive sensor sensitivity setting, normalized from 0 to 1.';
+			'otsc_codes(''REQ_CAPSENSE_SENSITIVITY'') = 629;          % (0x0275) Request the current capacitive sensor sensitivity setting, normalized from 0 to 1.';
+			'otsc_codes(''CAPSENSE_RESET'') = 630;                    % (0x0276) Reset the current capacitance sensor history.';
 			'';
-			'serial_codes(''CAPSENSE_VALUE'') = 640;                    % (0x0280) Report the current capacitance sensor reading, in ADC ticks or clock cycles.';
-			'serial_codes(''REQ_CAPSENSE_VALUE'') = 641;                % (0x0281) Request the current capacitance sensor reading, in ADC ticks or clock cycles.';
-			'serial_codes(''CAPSENSE_MINMAX'') = 642;                   % (0x0282) Report the minimum and maximum values of the current capacitive sensor''s history.';
-			'serial_codes(''REQ_CAPSENSE_MINMAX'') = 643;               % (0x0283) Request the minimum and maximum values of the current capacitive sensor''s history.';
-			'serial_codes(''CAPSENSE_MIN_RANGE'') = 644;                % (0x0284) Set/report the minimum signal range for positive detection with the current capacitive sensor.';
-			'serial_codes(''REQ_CAPSENSE_MIN_RANGE'') = 645;            % (0x0285) Request the minimum signal range for positive detection with the current capacitive sensor.';
-			'serial_codes(''CAPSENSE_THRESH_FIXED'') = 646;             % (0x0286) Set/report a fixed threshold for the current capacitive sensor, in ADC ticks or clock cycles.';
-			'serial_codes(''REQ_CAPSENSE_THRESH_FIXED'') = 647;         % (0x0287) Request the current threshold for the current capacitive sensor, in ADC ticks or clock cycles.';
-			'serial_codes(''CAPSENSE_THRESH_AUTO'') = 648;              % (0x0288) Set/report the current capacitive sensor auto-thresholding setting (0 = fixed, 1 = autoset <default>).';
-			'serial_codes(''REQ_CAPSENSE_THRESH_AUTO'') = 649;          % (0x0289) Request the current capacitive sensor auto-thresholding setting (0 = fixed, 1 = autoset <default>).';
-			'serial_codes(''CAPSENSE_RESET_TIMEOUT'') = 650;            % (0x028A) Set/report the current capacitive sensor reset timeout duration, in milliseconds (0 = no time-out reset).';
-			'serial_codes(''REQ_CAPSENSE_RESET_TIMEOUT'') = 651;        % (0x028B) Request the current capacitive sensor reset timeout duration, in milliseconds (0 = no time-out reset).';
-			'serial_codes(''CAPSENSE_SAMPLE_SIZE'') = 652;              % (0x028C) Set/report the current capacitive sensor repeated measurement sample size.';
-			'serial_codes(''REQ_CAPSENSE_SAMPLE_SIZE'') = 653;          % (0x028D) Request the current capacitive sensor repeated measurement sample size.';
-			'serial_codes(''CAPSENSE_BOXSMOOTH_N'') = 654;              % (0x028E) Set/report the current capacitive sensor box-smoothing size (0 = no box-smoothing). *DEPRECATED*';
-			'serial_codes(''REQ_CAPSENSE_BOXSMOOTH_N'') = 655;          % (0x028F) Request the current capacitive sensor box-smoothing size (0 = no box-smoothing). *DEPRECATED*';
-			'serial_codes(''CAPSENSE_DIFFERENTIATE'') = 656;            % (0x0290) Set/report the current capacitive sensor differentation mode (0 = off/raw signal, 1 = on/differentiated). *DEPRECATED*';
-			'serial_codes(''REQ_CAPSENSE_DIFFERENTIATE'') = 657;        % (0x0291) Request the current capacitive sensor differentation mode (0 = off/raw signal, 1 = on/differentiated). *DEPRECATED*';
-			'serial_codes(''CAPSENSE_HIGHPASS_CUTOFF'') = 658;          % (0x0292) Set/report the current capacitive sensor high-pass filter cutoff frequency, in Hz.';
-			'serial_codes(''REQ_CAPSENSE_HIGHPASS_CUTOFF'') = 659;      % (0x0293) Request the current capacitive sensor high-pass filter cutoff frequency, in Hz.';
-			'serial_codes(''CAPSENSE_FILTER_TYPE'') = 660;              % (0x0294) Set/report the current capacitive sensor filter type (0 = none, 1 = low-pass, 2 = high-pass). *DEPRECATED*';
-			'serial_codes(''REQ_CAPSENSE_FILTER_TYPE'') = 661;          % (0x0295) Request the current capacitive sensor filter type (0 = none, 1 = low-pass, 2 = high-pass). *DEPRECATED*';
-			'serial_codes(''CAPSENSE_LOWPASS_CUTOFF'') = 662;           % (0x0296) Set/report the current capacitive sensor low-pass filter cutoff frequency, in Hz.';
-			'serial_codes(''REQ_CAPSENSE_LOWPASS_CUTOFF'') = 663;       % (0x0297) Request the current capacitive sensor low-pass filter cutoff frequency, in Hz.';
+			'otsc_codes(''CAPSENSE_VALUE'') = 640;                    % (0x0280) Report the current capacitance sensor reading, in ADC ticks or clock cycles.';
+			'otsc_codes(''REQ_CAPSENSE_VALUE'') = 641;                % (0x0281) Request the current capacitance sensor reading, in ADC ticks or clock cycles.';
+			'otsc_codes(''CAPSENSE_MINMAX'') = 642;                   % (0x0282) Report the minimum and maximum values of the current capacitive sensor''s history.';
+			'otsc_codes(''REQ_CAPSENSE_MINMAX'') = 643;               % (0x0283) Request the minimum and maximum values of the current capacitive sensor''s history.';
+			'otsc_codes(''CAPSENSE_MIN_RANGE'') = 644;                % (0x0284) Set/report the minimum signal range for positive detection with the current capacitive sensor.';
+			'otsc_codes(''REQ_CAPSENSE_MIN_RANGE'') = 645;            % (0x0285) Request the minimum signal range for positive detection with the current capacitive sensor.';
+			'otsc_codes(''CAPSENSE_THRESH_FIXED'') = 646;             % (0x0286) Set/report a fixed threshold for the current capacitive sensor, in ADC ticks or clock cycles.';
+			'otsc_codes(''REQ_CAPSENSE_THRESH_FIXED'') = 647;         % (0x0287) Request the current threshold for the current capacitive sensor, in ADC ticks or clock cycles.';
+			'otsc_codes(''CAPSENSE_THRESH_AUTO'') = 648;              % (0x0288) Set/report the current capacitive sensor auto-thresholding setting (0 = fixed, 1 = autoset <default>).';
+			'otsc_codes(''REQ_CAPSENSE_THRESH_AUTO'') = 649;          % (0x0289) Request the current capacitive sensor auto-thresholding setting (0 = fixed, 1 = autoset <default>).';
+			'otsc_codes(''CAPSENSE_RESET_TIMEOUT'') = 650;            % (0x028A) Set/report the current capacitive sensor reset timeout duration, in milliseconds (0 = no time-out reset).';
+			'otsc_codes(''REQ_CAPSENSE_RESET_TIMEOUT'') = 651;        % (0x028B) Request the current capacitive sensor reset timeout duration, in milliseconds (0 = no time-out reset).';
+			'otsc_codes(''CAPSENSE_SAMPLE_SIZE'') = 652;              % (0x028C) Set/report the current capacitive sensor repeated measurement sample size.';
+			'otsc_codes(''REQ_CAPSENSE_SAMPLE_SIZE'') = 653;          % (0x028D) Request the current capacitive sensor repeated measurement sample size.';
+			'otsc_codes(''CAPSENSE_BOXSMOOTH_N'') = 654;              % (0x028E) Set/report the current capacitive sensor box-smoothing size (0 = no box-smoothing). *DEPRECATED*';
+			'otsc_codes(''REQ_CAPSENSE_BOXSMOOTH_N'') = 655;          % (0x028F) Request the current capacitive sensor box-smoothing size (0 = no box-smoothing). *DEPRECATED*';
+			'otsc_codes(''CAPSENSE_DIFFERENTIATE'') = 656;            % (0x0290) Set/report the current capacitive sensor differentation mode (0 = off/raw signal, 1 = on/differentiated). *DEPRECATED*';
+			'otsc_codes(''REQ_CAPSENSE_DIFFERENTIATE'') = 657;        % (0x0291) Request the current capacitive sensor differentation mode (0 = off/raw signal, 1 = on/differentiated). *DEPRECATED*';
+			'otsc_codes(''CAPSENSE_HIGHPASS_CUTOFF'') = 658;          % (0x0292) Set/report the current capacitive sensor high-pass filter cutoff frequency, in Hz.';
+			'otsc_codes(''REQ_CAPSENSE_HIGHPASS_CUTOFF'') = 659;      % (0x0293) Request the current capacitive sensor high-pass filter cutoff frequency, in Hz.';
+			'otsc_codes(''CAPSENSE_FILTER_TYPE'') = 660;              % (0x0294) Set/report the current capacitive sensor filter type (0 = none, 1 = low-pass, 2 = high-pass). *DEPRECATED*';
+			'otsc_codes(''REQ_CAPSENSE_FILTER_TYPE'') = 661;          % (0x0295) Request the current capacitive sensor filter type (0 = none, 1 = low-pass, 2 = high-pass). *DEPRECATED*';
+			'otsc_codes(''CAPSENSE_LOWPASS_CUTOFF'') = 662;           % (0x0296) Set/report the current capacitive sensor low-pass filter cutoff frequency, in Hz.';
+			'otsc_codes(''REQ_CAPSENSE_LOWPASS_CUTOFF'') = 663;       % (0x0297) Request the current capacitive sensor low-pass filter cutoff frequency, in Hz.';
 			'';
-			'serial_codes(''REQ_THERM_PIXELS_INT_K'') = 768;            % (0x0300) Request a thermal pixel image as 16-bit unsigned integers in units of deciKelvin (dK, or Kelvin * 10).';
-			'serial_codes(''THERM_PIXELS_INT_K'') = 769;                % (0x0301) Report a thermal image as 16-bit unsigned integers in units of deciKelvin (dK, or Kelvin * 10).';
-			'serial_codes(''REQ_THERM_PIXELS_FP62'') = 770;             % (0x0302) Request a thermal pixel image as a fixed-point 6/2 type (6 bits for the unsigned integer part, 2 bits for the decimal part), in units of Celcius.';
-			'serial_codes(''THERM_PIXELS_FP62'') = 771;                 % (0x0303) Report a thermal pixel image as a fixed-point 6/2 type (6 bits for the unsigned integer part, 2 bits for the decimal part), in units of Celcius. This allows temperatures from 0 to 63.75 C.';
+			'otsc_codes(''REQ_THERM_PIXELS_INT_K'') = 768;            % (0x0300) Request a thermal pixel image as 16-bit unsigned integers in units of deciKelvin (dK, or Kelvin * 10).';
+			'otsc_codes(''THERM_PIXELS_INT_K'') = 769;                % (0x0301) Report a thermal image as 16-bit unsigned integers in units of deciKelvin (dK, or Kelvin * 10).';
+			'otsc_codes(''REQ_THERM_PIXELS_FP62'') = 770;             % (0x0302) Request a thermal pixel image as a fixed-point 6/2 type (6 bits for the unsigned integer part, 2 bits for the decimal part), in units of Celcius.';
+			'otsc_codes(''THERM_PIXELS_FP62'') = 771;                 % (0x0303) Report a thermal pixel image as a fixed-point 6/2 type (6 bits for the unsigned integer part, 2 bits for the decimal part), in units of Celcius. This allows temperatures from 0 to 63.75 C.';
 			'';
-			'serial_codes(''REQ_THERM_XY_PIX'') = 784;                  % (0x0310) Request the current thermal hotspot x-y position, in units of pixels.';
-			'serial_codes(''THERM_XY_PIX'') = 785;                      % (0x0311) Report the current thermal hotspot x-y position, in units of pixels.';
+			'otsc_codes(''REQ_THERM_XY_PIX'') = 784;                  % (0x0310) Request the current thermal hotspot x-y position, in units of pixels.';
+			'otsc_codes(''THERM_XY_PIX'') = 785;                      % (0x0311) Report the current thermal hotspot x-y position, in units of pixels.';
 			'';
-			'serial_codes(''REQ_AMBIENT_TEMP'') = 800;                  % (0x0320) Request the current ambient temperature as a 32-bit float, in units of Celsius.';
-			'serial_codes(''AMBIENT_TEMP'') = 801;                      % (0x0321) Report the current ambient temperature as a 32-bit float, in units of Celsius.';
+			'otsc_codes(''REQ_AMBIENT_TEMP'') = 800;                  % (0x0320) Request the current ambient temperature as a 32-bit float, in units of Celsius.';
+			'otsc_codes(''AMBIENT_TEMP'') = 801;                      % (0x0321) Report the current ambient temperature as a 32-bit float, in units of Celsius.';
 			'';
-			'serial_codes(''REQ_TOF_DIST'') = 896;                      % (0x0380) Request the current time-of-flight distance reading, in units of millimeters (float32).';
-			'serial_codes(''TOF_DIST'') = 897;                          % (0x0381) Report the current time-of-flight distance reading, in units of millimeters (float32).';
+			'otsc_codes(''REQ_TOF_DIST'') = 896;                      % (0x0380) Request the current time-of-flight distance reading, in units of millimeters (float32).';
+			'otsc_codes(''TOF_DIST'') = 897;                          % (0x0381) Report the current time-of-flight distance reading, in units of millimeters (float32).';
 			'';
-			'serial_codes(''REQ_OPTICAL_FLOW_XY'') = 1024;              % (0x0400) Request the current x- and y-coordinates from the currently-selected optical flow sensor, as 32-bit integers.';
-			'serial_codes(''OPTICAL_FLOW_XY'') = 1025;                  % (0x0401) Report the current x- and y-coordinates from the currently-selected optical flow sensor, as 32-bit integers.';
-			'serial_codes(''REQ_OPTICAL_FLOW_DELTA_XY'') = 1026;        % (0x0402) Request the current change in x- and y-coordinates from the currently-selected optical flow sensor, as 32-bit integers.';
-			'serial_codes(''OPTICAL_FLOW_DELTA_XY'') = 1027;            % (0x0403) Report the current change in x- and y-coordinates from the currently-selected optical flow sensor, as 32-bit integers.';
-			'serial_codes(''REQ_OPTICAL_FLOW_DELTA_3VEC'') = 1028;      % (0x0404) Request the current change in value from the three selected optical flow vectors, as 16-bit integers.';
-			'serial_codes(''OPTICAL_FLOW_DELTA_3VEC'') = 1029;          % (0x0405) Report the current change in value from the three selected optical flow vectors, as 16-bit integers.';
-			'serial_codes(''REQ_OPTICAL_FLOW_INDEX'') = 1030;           % (0x0406) Request the current optical flow sensor index.';
-			'serial_codes(''OPTICAL_FLOW_INDEX'') = 1031;               % (0x0407) Set/report the current optical flow sensor index.';
-			'serial_codes(''OPTICAL_FLOW_RESET'') = 1032;               % (0x0408) Reset the current x- and y- counts for all optical flow sensors on the module.';
+			'otsc_codes(''REQ_OPTICAL_FLOW_XY'') = 1024;              % (0x0400) Request the current x- and y-coordinates from the currently-selected optical flow sensor, as 32-bit integers.';
+			'otsc_codes(''OPTICAL_FLOW_XY'') = 1025;                  % (0x0401) Report the current x- and y-coordinates from the currently-selected optical flow sensor, as 32-bit integers.';
+			'otsc_codes(''REQ_OPTICAL_FLOW_DELTA_XY'') = 1026;        % (0x0402) Request the current change in x- and y-coordinates from the currently-selected optical flow sensor, as 32-bit integers.';
+			'otsc_codes(''OPTICAL_FLOW_DELTA_XY'') = 1027;            % (0x0403) Report the current change in x- and y-coordinates from the currently-selected optical flow sensor, as 32-bit integers.';
+			'otsc_codes(''REQ_OPTICAL_FLOW_DELTA_3VEC'') = 1028;      % (0x0404) Request the current change in value from the three selected optical flow vectors, as 16-bit integers.';
+			'otsc_codes(''OPTICAL_FLOW_DELTA_3VEC'') = 1029;          % (0x0405) Report the current change in value from the three selected optical flow vectors, as 16-bit integers.';
+			'otsc_codes(''REQ_OPTICAL_FLOW_INDEX'') = 1030;           % (0x0406) Request the current optical flow sensor index.';
+			'otsc_codes(''OPTICAL_FLOW_INDEX'') = 1031;               % (0x0407) Set/report the current optical flow sensor index.';
+			'otsc_codes(''OPTICAL_FLOW_RESET'') = 1032;               % (0x0408) Reset the current x- and y- counts for all optical flow sensors on the module.';
 			'';
-			'serial_codes(''REQ_TTL_INDEX'') = 1280;                    % (0x0500) Request the current TTL I/O index.';
-			'serial_codes(''TTL_INDEX'') = 1281;                        % (0x0501) Set/report the current TTL I/O index.';
-			'serial_codes(''TTL_START_PULSE'') = 1282;                  % (0x0502) Immediately start a TTL pulse on the specifed I/O.';
-			'serial_codes(''TTL_STOP_PULSE'') = 1283;                   % (0x0503) Immediately stop a TTL pulse on the specifed I/O.';
-			'serial_codes(''REQ_TTL_PULSE_DUR'') = 1284;                % (0x0504) Request the current TTL pulse duration, in milliseconds.';
-			'serial_codes(''TTL_PULSE_DUR'') = 1285;                    % (0x0505) Set/report the current TTL pulse duration, in milliseconds.';
-			'serial_codes(''REQ_TTL_PULSE_VALS'') = 1286;               % (0x0506) Request the current TTL pulse "on" and "off" values.';
-			'serial_codes(''TTL_PULSE_OFF_VAL'') = 1287;                % (0x0507) Set/report the current TTL pulse "off" value.';
-			'serial_codes(''TTL_PULSE_ON_VAL'') = 1288;                 % (0x0508) Set/report the current TTL pulse "on" value.';
-			'serial_codes(''TTL_XINT'') = 1289;                         % (0x0509) Report a TTL input pseudo-interrupt event.';
-			'serial_codes(''REQ_TTL_XINT_THRESH'') = 1290;              % (0x050A) Request the current TTL input pseudo-interrupt threshold.';
-			'serial_codes(''TTL_XINT_THRESH'') = 1291;                  % (0x050B) Set/report the current TTL input pseudo-interrupt threshold.';
-			'serial_codes(''REQ_TTL_XINT_MODE'') = 1292;                % (0x050C) Request the current TTL input pseudo-interrupt mode.';
-			'serial_codes(''TTL_XINT_MODE'') = 1293;                    % (0x050D) Set/report the current TTL input pseudo-interrupt mode.';
-			'serial_codes(''TTL_SET_DOUT'') = 1294;                     % (0x050E) Set the TTL digital output value.';
-			'serial_codes(''REQ_TTL_DIGITAL_BITMASK'') = 1295;          % (0x050F) Request the current TTL digital status bitmask.';
-			'serial_codes(''TTL_DIGITAL_BITMASK'') = 1296;              % (0x0510) Report the current TTL digital status bitmask.';
-			'serial_codes(''TTL_SET_AOUT'') = 1297;                     % (0x0511) Set the specified TTL I/O''s analog output value.';
-			'serial_codes(''REQ_TTL_AIN'') = 1298;                      % (0x0512) Request the specified TTL I/O''s analog input value.';
-			'serial_codes(''TTL_AIN'') = 1299;                          % (0x0513) Report the specified TTL I/O''s analog input value.';
+			'otsc_codes(''REQ_TTL_INDEX'') = 1280;                    % (0x0500) Request the current TTL I/O index.';
+			'otsc_codes(''TTL_INDEX'') = 1281;                        % (0x0501) Set/report the current TTL I/O index.';
+			'otsc_codes(''TTL_START_PULSETRAIN'') = 1282;             % (0x0502) Immediately start a TTL pulse on the specifed I/O.';
+			'otsc_codes(''TTL_STOP_PULSETRAIN'') = 1283;              % (0x0503) Immediately stop a TTL pulsetrain on the specifed I/O.';
+			'otsc_codes(''REQ_TTL_PULSE_DUR'') = 1284;                % (0x0504) Request the current TTL pulse duration, in milliseconds.';
+			'otsc_codes(''TTL_PULSE_DUR'') = 1285;                    % (0x0505) Set/report the current TTL pulse duration, in milliseconds.';
+			'otsc_codes(''REQ_TTL_PULSE_VALS'') = 1286;               % (0x0506) Request the current TTL pulse "on" and "off" values.';
+			'otsc_codes(''TTL_PULSE_OFF_VAL'') = 1287;                % (0x0507) Set/report the current TTL pulse "off" value.';
+			'otsc_codes(''TTL_PULSE_ON_VAL'') = 1288;                 % (0x0508) Set/report the current TTL pulse "on" value.';
+			'otsc_codes(''TTL_XINT'') = 1289;                         % (0x0509) Report a TTL input pseudo-interrupt event.';
+			'otsc_codes(''REQ_TTL_XINT_THRESH'') = 1290;              % (0x050A) Request the current TTL input pseudo-interrupt threshold.';
+			'otsc_codes(''TTL_XINT_THRESH'') = 1291;                  % (0x050B) Set/report the current TTL input pseudo-interrupt threshold.';
+			'otsc_codes(''REQ_TTL_XINT_MODE'') = 1292;                % (0x050C) Request the current TTL input pseudo-interrupt mode.';
+			'otsc_codes(''TTL_XINT_MODE'') = 1293;                    % (0x050D) Set/report the current TTL input pseudo-interrupt mode.';
+			'otsc_codes(''TTL_SET_DOUT'') = 1294;                     % (0x050E) Set the TTL digital output value.';
+			'otsc_codes(''REQ_TTL_DIGITAL_BITMASK'') = 1295;          % (0x050F) Request the current TTL digital status bitmask.';
+			'otsc_codes(''TTL_DIGITAL_BITMASK'') = 1296;              % (0x0510) Report the current TTL digital status bitmask.';
+			'otsc_codes(''TTL_SET_AOUT'') = 1297;                     % (0x0511) Set the specified TTL I/O''s analog output value.';
+			'otsc_codes(''REQ_TTL_AIN'') = 1298;                      % (0x0512) Request the specified TTL I/O''s analog input value.';
+			'otsc_codes(''TTL_AIN'') = 1299;                          % (0x0513) Report the specified TTL I/O''s analog input value.';
+			'otsc_codes(''REQ_TTL_NUM_PULSES'') = 1300;               % (0x0514) Request the current number of pulses in the TTL pulsetrain.';
+			'otsc_codes(''TTL_NUM_PULSES'') = 1301;                   % (0x0515) Set/report the current number of pulses in the TTL pulsetrain.';
+			'otsc_codes(''REQ_TTL_INTERPULSE_PERIOD'') = 1302;        % (0x0516) Request the current TTL onset-to-onset interpulse period, in milliseconds.';
+			'otsc_codes(''TTL_INTERPULSE_PERIOD'') = 1303;            % (0x0517) Set/report the current TTL onset-to-onset interpulse period, in milliseconds.';
+			'otsc_codes(''TTL_PULSETRAIN_ABORT'') = 1304;             % (0x0518) Report that a TTL pulsetrain was canceled before completion.';
 			'';
-			'serial_codes(''VIB_DUR'') = 16384;                         % (0x4000) Set/report the current vibration pulse duration, in microseconds.';
-			'serial_codes(''REQ_VIB_DUR'') = 16385;                     % (0x4001) Request the current vibration pulse duration, in microseconds.';
-			'serial_codes(''VIB_IPI'') = 16386;                         % (0x4002) Set/report the current vibration train onset-to-onset inter-pulse interval, in microseconds.';
-			'serial_codes(''REQ_VIB_IPI'') = 16387;                     % (0x4003) Request the current vibration train onset-to-onset inter-pulse interval, in microseconds.';
-			'serial_codes(''VIB_N_PULSE'') = 16388;                     % (0x4004) Set/report the current vibration train duration, in number of pulses.';
-			'serial_codes(''REQ_VIB_N_PULSE'') = 16389;                 % (0x4005) Request the current vibration train duration, in number of pulses.';
-			'serial_codes(''VIB_GAP'') = 16390;                         % (0x4006) Set/report the current vibration train skipped pulses starting and stopping index.';
-			'serial_codes(''REQ_VIB_GAP'') = 16391;                     % (0x4007) Request the current vibration train skipped pulses starting and stopping index.';
+			'otsc_codes(''VIB_DUR'') = 16384;                         % (0x4000) Set/report the current vibration pulse duration, in microseconds.';
+			'otsc_codes(''REQ_VIB_DUR'') = 16385;                     % (0x4001) Request the current vibration pulse duration, in microseconds.';
+			'otsc_codes(''VIB_IPI'') = 16386;                         % (0x4002) Set/report the current vibration train onset-to-onset inter-pulse interval, in microseconds.';
+			'otsc_codes(''REQ_VIB_IPI'') = 16387;                     % (0x4003) Request the current vibration train onset-to-onset inter-pulse interval, in microseconds.';
+			'otsc_codes(''VIB_N_PULSE'') = 16388;                     % (0x4004) Set/report the current vibration train duration, in number of pulses.';
+			'otsc_codes(''REQ_VIB_N_PULSE'') = 16389;                 % (0x4005) Request the current vibration train duration, in number of pulses.';
+			'otsc_codes(''VIB_GAP'') = 16390;                         % (0x4006) Set/report the current vibration train skipped pulses starting and stopping index.';
+			'otsc_codes(''REQ_VIB_GAP'') = 16391;                     % (0x4007) Request the current vibration train skipped pulses starting and stopping index.';
 			'';
-			'serial_codes(''START_VIB'') = 16394;                       % (0x400A) Immediately start the vibration pulse train.';
-			'serial_codes(''STOP_VIB'') = 16395;                        % (0x400B) Immediately stop the vibration pulse train.';
-			'serial_codes(''VIB_MASK_ENABLE'') = 16396;                 % (0x400C) Enable/disable vibration tone masking (0 = disabled, 1 = enabled).';
-			'serial_codes(''VIB_MASK_TONE_INDEX'') = 16397;             % (0x400D) Set/report the current tone repertoire index for the masking tone.';
-			'serial_codes(''REQ_VIB_MASK_TONE_INDEX'') = 16398;         % (0x400E) Request the current tone repertoire index for the masking tone.';
-			'serial_codes(''VIB_TASK_MODE'') = 16399;                   % (0x400F) Set/report the current vibration task mode (1 = BURST, 2 = GAP).';
-			'serial_codes(''REQ_VIB_TASK_MODE'') = 16400;               % (0x4010) Request the current vibration task mode (1 = BURST, 2 = GAP).';
-			'serial_codes(''VIB_INDEX'') = 16401;                       % (0x4011) Set/report the current vibration motor/actuator index.';
-			'serial_codes(''REQ_VIB_INDEX'') = 16402;                   % (0x4012) Request the current vibration motor/actuator index.';
+			'otsc_codes(''START_VIB'') = 16394;                       % (0x400A) Immediately start the vibration pulse train.';
+			'otsc_codes(''STOP_VIB'') = 16395;                        % (0x400B) Immediately stop the vibration pulse train.';
+			'otsc_codes(''VIB_MASK_ENABLE'') = 16396;                 % (0x400C) Enable/disable vibration tone masking (0 = disabled, 1 = enabled).';
+			'otsc_codes(''VIB_MASK_TONE_INDEX'') = 16397;             % (0x400D) Set/report the current tone repertoire index for the masking tone.';
+			'otsc_codes(''REQ_VIB_MASK_TONE_INDEX'') = 16398;         % (0x400E) Request the current tone repertoire index for the masking tone.';
+			'otsc_codes(''VIB_TASK_MODE'') = 16399;                   % (0x400F) Set/report the current vibration task mode (1 = BURST, 2 = GAP).';
+			'otsc_codes(''REQ_VIB_TASK_MODE'') = 16400;               % (0x4010) Request the current vibration task mode (1 = BURST, 2 = GAP).';
+			'otsc_codes(''VIB_INDEX'') = 16401;                       % (0x4011) Set/report the current vibration motor/actuator index.';
+			'otsc_codes(''REQ_VIB_INDEX'') = 16402;                   % (0x4012) Request the current vibration motor/actuator index.';
 			'';
-			'serial_codes(''STAP_STEPS_PER_ROT'') = 16665;              % (0x4119) Set/report the number of steps per full revolution for the stepper motor.';
-			'serial_codes(''STAP_REQ_STEPS_PER_ROT'') = 16666;          % (0x411A) Return the current number of steps per full revolution for the stepper motor.';
+			'otsc_codes(''STAP_STEPS_PER_ROT'') = 16665;              % (0x4119) Set/report the number of steps per full revolution for the stepper motor.';
+			'otsc_codes(''STAP_REQ_STEPS_PER_ROT'') = 16666;          % (0x411A) Return the current number of steps per full revolution for the stepper motor.';
 			'';
-			'serial_codes(''STAP_MICROSTEP'') = 16670;                  % (0x411E) Set/report the microstepping multiplier.';
-			'serial_codes(''STAP_REQ_MICROSTEP'') = 16671;              % (0x411F) Request the current microstepping multiplier.';
-			'serial_codes(''CUR_POS'') = 16672;                         % (0x4120) Set/report the target/current handle position, in micrometers.';
-			'serial_codes(''REQ_CUR_POS'') = 16673;                     % (0x4121) Request the current handle position, in micrometers.';
-			'serial_codes(''MIN_SPEED'') = 16674;                       % (0x4122) Set/report the minimum movement speed, in micrometers/second.';
-			'serial_codes(''REQ_MIN_SPEED'') = 16675;                   % (0x4123) Request the minimum movement speed, in micrometers/second.';
-			'serial_codes(''MAX_SPEED'') = 16676;                       % (0x4124) Set/report the maximum movement speed, in micrometers/second.';
-			'serial_codes(''REQ_MAX_SPEED'') = 16677;                   % (0x4125) Request the maximum movement speed, in micrometers/second.';
-			'serial_codes(''RAMP_N'') = 16678;                          % (0x4126) Set/report the cosine ramp length, in steps.';
-			'serial_codes(''REQ_RAMP_N'') = 16679;                      % (0x4127) Request the cosine ramp length, in steps.';
-			'serial_codes(''PITCH_CIRC'') = 16680;                      % (0x4128) Set/report the driving gear pitch circumference, in micrometers.';
-			'serial_codes(''REQ_PITCH_CIRC'') = 16681;                  % (0x4129) Request the driving gear pitch circumference, in micrometers.';
-			'serial_codes(''CENTER_OFFSET'') = 16682;                   % (0x412A) Set/report the center-to-slot detector offset, in micrometers.';
-			'serial_codes(''REQ_CENTER_OFFSET'') = 16683;               % (0x412B) Request the center-to-slot detector offset, in micrometers.';
+			'otsc_codes(''STAP_MICROSTEP'') = 16670;                  % (0x411E) Set/report the microstepping multiplier.';
+			'otsc_codes(''STAP_REQ_MICROSTEP'') = 16671;              % (0x411F) Request the current microstepping multiplier.';
+			'otsc_codes(''CUR_POS'') = 16672;                         % (0x4120) Set/report the target/current handle position, in micrometers.';
+			'otsc_codes(''REQ_CUR_POS'') = 16673;                     % (0x4121) Request the current handle position, in micrometers.';
+			'otsc_codes(''MIN_SPEED'') = 16674;                       % (0x4122) Set/report the minimum movement speed, in micrometers/second.';
+			'otsc_codes(''REQ_MIN_SPEED'') = 16675;                   % (0x4123) Request the minimum movement speed, in micrometers/second.';
+			'otsc_codes(''MAX_SPEED'') = 16676;                       % (0x4124) Set/report the maximum movement speed, in micrometers/second.';
+			'otsc_codes(''REQ_MAX_SPEED'') = 16677;                   % (0x4125) Request the maximum movement speed, in micrometers/second.';
+			'otsc_codes(''RAMP_N'') = 16678;                          % (0x4126) Set/report the cosine ramp length, in steps.';
+			'otsc_codes(''REQ_RAMP_N'') = 16679;                      % (0x4127) Request the cosine ramp length, in steps.';
+			'otsc_codes(''PITCH_CIRC'') = 16680;                      % (0x4128) Set/report the driving gear pitch circumference, in micrometers.';
+			'otsc_codes(''REQ_PITCH_CIRC'') = 16681;                  % (0x4129) Request the driving gear pitch circumference, in micrometers.';
+			'otsc_codes(''CENTER_OFFSET'') = 16682;                   % (0x412A) Set/report the center-to-slot detector offset, in micrometers.';
+			'otsc_codes(''REQ_CENTER_OFFSET'') = 16683;               % (0x412B) Request the center-to-slot detector offset, in micrometers.';
 			'';
-			'serial_codes(''TRIAL_SPEED'') = 16688;                     % (0x4130) Set/report the trial movement speed, in micrometers/second.';
-			'serial_codes(''REQ_TRIAL_SPEED'') = 16689;                 % (0x4131) Request the trial movement speed, in micrometers/second.';
-			'serial_codes(''RECENTER'') = 16690;                        % (0x4132) Rapidly re-center the handle to the home position state.';
-			'serial_codes(''RECENTER_COMPLETE'') = 16691;               % (0x4133) Indicate that the handle is recentered.';
+			'otsc_codes(''TRIAL_SPEED'') = 16688;                     % (0x4130) Set/report the trial movement speed, in micrometers/second.';
+			'otsc_codes(''REQ_TRIAL_SPEED'') = 16689;                 % (0x4131) Request the trial movement speed, in micrometers/second.';
+			'otsc_codes(''RECENTER'') = 16690;                        % (0x4132) Rapidly re-center the handle to the home position state.';
+			'otsc_codes(''RECENTER_COMPLETE'') = 16691;               % (0x4133) Indicate that the handle is recentered.';
 			'';
-			'serial_codes(''SINGLE_EXCURSION'') = 16705;                % (0x4141) Select excursion type:  direct single motion (L/R)';
-			'serial_codes(''INCREASING_EXCURSION'') = 16706;            % (0x4142) Select excursion type:  deviation increase from midline';
-			'serial_codes(''DRIFTING_EXCURSION'') = 16707;              % (0x4143) Select excursion type:  R/L motion with a net direction';
-			'serial_codes(''SELECT_TEST_DEV_DEG'') = 16708;             % (0x4144) Set deviation degrees:  used in mode 65, 66 and 67';
-			'serial_codes(''SELECT_BASE_DEV_DEG'') = 16709;             % (0x4145) Set the baseline rocking: used in mode 66 and 67';
-			'serial_codes(''SELECT_SYMMETRY'') = 16710;                 % (0x4146) Sets oscillation around midline or from mindline';
-			'serial_codes(''SELECT_ACCEL'') = 16711;                    % (0x4147) ';
-			'serial_codes(''SET_EXCURSION_TYPE'') = 16712;              % (0x4148) Set the excursion type (49 = simple movement, 50 = wandering wobble)';
-			'serial_codes(''GET_EXCURSION_TYPE'') = 16713;              % (0x4149) Get the current excurion type.';
+			'otsc_codes(''SINGLE_EXCURSION'') = 16705;                % (0x4141) Select excursion type:  direct single motion (L/R)';
+			'otsc_codes(''INCREASING_EXCURSION'') = 16706;            % (0x4142) Select excursion type:  deviation increase from midline';
+			'otsc_codes(''DRIFTING_EXCURSION'') = 16707;              % (0x4143) Select excursion type:  R/L motion with a net direction';
+			'otsc_codes(''SELECT_TEST_DEV_DEG'') = 16708;             % (0x4144) Set deviation degrees:  used in mode 65, 66 and 67';
+			'otsc_codes(''SELECT_BASE_DEV_DEG'') = 16709;             % (0x4145) Set the baseline rocking: used in mode 66 and 67';
+			'otsc_codes(''SELECT_SYMMETRY'') = 16710;                 % (0x4146) Sets oscillation around midline or from mindline';
+			'otsc_codes(''SELECT_ACCEL'') = 16711;                    % (0x4147) ';
+			'otsc_codes(''SET_EXCURSION_TYPE'') = 16712;              % (0x4148) Set the excursion type (49 = simple movement, 50 = wandering wobble)';
+			'otsc_codes(''GET_EXCURSION_TYPE'') = 16713;              % (0x4149) Get the current excurion type.';
 			'';
-			'serial_codes(''CUR_DEBUG_MODE'') = 25924;                  % (0x6544) Report the current debug mode ("Debug_ON_" or "Debug_OFF");';
+			'otsc_codes(''CUR_DEBUG_MODE'') = 25924;                  % (0x6544) Report the current debug mode ("Debug_ON_" or "Debug_OFF");';
 			'';
-			'serial_codes(''TOGGLE_DEBUG_MODE'') = 25956;               % (0x6564) Toggle OTSC debugging mode (type "db" in a serial monitor).';
+			'otsc_codes(''TOGGLE_DEBUG_MODE'') = 25956;               % (0x6564) Toggle OTSC debugging mode (type "db" in a serial monitor).';
 			'';
-			'serial_codes(''REQ_BAUDRATE_TEST'') = 29794;               % (0x7462) Request a baud rate test packet (uint8 values 0-255, in order). Type ''bt'' into the serial monitor to run.';
-			'serial_codes(''BAUDRATE_TEST'') = 29795;                   % (0x7463) Send/receive a baud rate test packet (uint8 values 0-x, in order).';
-			'serial_codes(''BAUDRATE_TEST_RESULTS'') = 29796;           % (0x7464) Report baud rate test results (correct count, byte count).';
-			'serial_codes(''REPORT_BAUDRATE'') = 29797;                 % (0x7465) Report the current baud rate (in Hz).';
+			'otsc_codes(''REQ_BAUDRATE_TEST'') = 29794;               % (0x7462) Request a baud rate test packet (uint8 values 0-255, in order). Type ''bt'' into the serial monitor to run.';
+			'otsc_codes(''BAUDRATE_TEST'') = 29795;                   % (0x7463) Send/receive a baud rate test packet (uint8 values 0-x, in order).';
+			'otsc_codes(''BAUDRATE_TEST_RESULTS'') = 29796;           % (0x7464) Report baud rate test results (correct count, byte count).';
+			'otsc_codes(''REPORT_BAUDRATE'') = 29797;                 % (0x7465) Report the current baud rate (in Hz).';
 			'';
-			'serial_codes(''REQ_LOADCELL_VAL_ADC'') = 43526;            % (0xAA06) Request the current force/loadcell value, in ADC ticks (uint16).';
-			'serial_codes(''LOADCELL_VAL_ADC'') = 43527;                % (0xAA07) Report the current force/loadcell value, in ADC ticks (uint16).';
-			'serial_codes(''LOADCELL_INDEX'') = 43528;                  % (0xAA08) Set/report the current loadcell/force sensor index.';
-			'serial_codes(''REQ_LOADCELL_INDEX'') = 43529;              % (0xAA09) Request the current loadcell/force  sensor index.';
-			'serial_codes(''REQ_LOADCELL_VAL_GM'') = 43530;             % (0xAA0A) Request the current force/loadcell value, in units of grams (float).';
-			'serial_codes(''LOADCELL_VAL_GM'') = 43531;                 % (0xAA0B) Report the current force/loadcell value, in units of grams (float).';
-			'serial_codes(''REQ_LOADCELL_CAL_BASELINE'') = 43532;       % (0xAA0C) Request the current loadcell/force calibration baseline, in ADC ticks (float).';
-			'serial_codes(''LOADCELL_CAL_BASELINE'') = 43533;           % (0xAA0D) Set/report the current loadcell/force calibration baseline, in ADC ticks (float).';
-			'serial_codes(''REQ_LOADCELL_CAL_SLOPE'') = 43534;          % (0xAA0E) Request the current loadcell/force calibration slope, in grams per ADC tick (float).';
-			'serial_codes(''LOADCELL_CAL_SLOPE'') = 43535;              % (0xAA0F) Set/report the current loadcell/force calibration slope, in grams per ADC tick (float).';
-			'serial_codes(''REQ_LOADCELL_DIGPOT_BASELINE'') = 43536;    % (0xAA10) Request the current loadcell/force baseline-adjusting digital potentiometer setting, scaled 0-1 (float).';
-			'serial_codes(''LOADCELL_DIGPOT_BASELINE'') = 43537;        % (0xAA11) Set/report the current loadcell/force baseline-adjusting digital potentiometer setting, scaled 0-1 (float).';
-			'serial_codes(''REQ_LOADCELL_VAL_DGM'') = 43538;            % (0xAA12) Request the current force/loadcell value, in units of decigrams (int16).';
-			'serial_codes(''LOADCELL_VAL_DGM'') = 43539;                % (0xAA13) Report the current force/loadcell value, in units of decigrams (int16).';
-			'serial_codes(''REQ_LOADCELL_GAIN'') = 43540;               % (0xAA14) Request the current force/loadcell gain setting (float).';
-			'serial_codes(''LOADCELL_GAIN'') = 43541;                   % (0xAA15) Set/report the current force/loadcell gain setting (float).';
-			'serial_codes(''LOADCELL_BASELINE_MEASURE'') = 43542;       % (0xAA16) Measure the current loadcell/force sensor baseline (loadcell should be unloaded).';
-			'serial_codes(''LOADCELL_BASELINE_ADJUST'') = 43543;        % (0xAA17) Adjust the current loadcell/force baseline-adjusting digital potentiometer to be as close as possible to the specified ADC target (loadcell should be unloaded).';
-			'serial_codes(''LOADCELL_CAL_SLOPE_MEASURE'') = 43544;      % (0xAA18) Measure the current loadcell/force sensor calibration slope given the specified force/weight.';
-			'serial_codes(''STEPS_PER_ROT'') = 43545;                   % (0xAA19) Set/report the number of steps per full revolution for the stepper motor.';
-			'serial_codes(''REQ_STEPS_PER_ROT'') = 43546;               % (0xAA1A) Return the current number of steps per full revolution for the stepper motor.';
+			'otsc_codes(''REQ_LOADCELL_VAL_ADC'') = 43526;            % (0xAA06) Request the current force/loadcell value, in ADC ticks (uint16).';
+			'otsc_codes(''LOADCELL_VAL_ADC'') = 43527;                % (0xAA07) Report the current force/loadcell value, in ADC ticks (uint16).';
+			'otsc_codes(''LOADCELL_INDEX'') = 43528;                  % (0xAA08) Set/report the current loadcell/force sensor index.';
+			'otsc_codes(''REQ_LOADCELL_INDEX'') = 43529;              % (0xAA09) Request the current loadcell/force  sensor index.';
+			'otsc_codes(''REQ_LOADCELL_VAL_GM'') = 43530;             % (0xAA0A) Request the current force/loadcell value, in units of grams (float).';
+			'otsc_codes(''LOADCELL_VAL_GM'') = 43531;                 % (0xAA0B) Report the current force/loadcell value, in units of grams (float).';
+			'otsc_codes(''REQ_LOADCELL_CAL_BASELINE'') = 43532;       % (0xAA0C) Request the current loadcell/force calibration baseline, in ADC ticks (float).';
+			'otsc_codes(''LOADCELL_CAL_BASELINE'') = 43533;           % (0xAA0D) Set/report the current loadcell/force calibration baseline, in ADC ticks (float).';
+			'otsc_codes(''REQ_LOADCELL_CAL_SLOPE'') = 43534;          % (0xAA0E) Request the current loadcell/force calibration slope, in grams per ADC tick (float).';
+			'otsc_codes(''LOADCELL_CAL_SLOPE'') = 43535;              % (0xAA0F) Set/report the current loadcell/force calibration slope, in grams per ADC tick (float).';
+			'otsc_codes(''REQ_LOADCELL_DIGPOT_BASELINE'') = 43536;    % (0xAA10) Request the current loadcell/force baseline-adjusting digital potentiometer setting, scaled 0-1 (float).';
+			'otsc_codes(''LOADCELL_DIGPOT_BASELINE'') = 43537;        % (0xAA11) Set/report the current loadcell/force baseline-adjusting digital potentiometer setting, scaled 0-1 (float).';
+			'otsc_codes(''REQ_LOADCELL_VAL_DGM'') = 43538;            % (0xAA12) Request the current force/loadcell value, in units of decigrams (int16).';
+			'otsc_codes(''LOADCELL_VAL_DGM'') = 43539;                % (0xAA13) Report the current force/loadcell value, in units of decigrams (int16).';
+			'otsc_codes(''REQ_LOADCELL_GAIN'') = 43540;               % (0xAA14) Request the current force/loadcell gain setting (float).';
+			'otsc_codes(''LOADCELL_GAIN'') = 43541;                   % (0xAA15) Set/report the current force/loadcell gain setting (float).';
+			'otsc_codes(''LOADCELL_BASELINE_MEASURE'') = 43542;       % (0xAA16) Measure the current loadcell/force sensor baseline (loadcell should be unloaded).';
+			'otsc_codes(''LOADCELL_BASELINE_ADJUST'') = 43543;        % (0xAA17) Adjust the current loadcell/force baseline-adjusting digital potentiometer to be as close as possible to the specified ADC target (loadcell should be unloaded).';
+			'otsc_codes(''LOADCELL_CAL_SLOPE_MEASURE'') = 43544;      % (0xAA18) Measure the current loadcell/force sensor calibration slope given the specified force/weight.';
+			'otsc_codes(''STEPS_PER_ROT'') = 43545;                   % (0xAA19) Set/report the number of steps per full revolution for the stepper motor.';
+			'otsc_codes(''REQ_STEPS_PER_ROT'') = 43546;               % (0xAA1A) Return the current number of steps per full revolution for the stepper motor.';
 			'';
-			'serial_codes(''MICROSTEP'') = 43550;                       % (0xAA1E) Set/report the microstepping multiplier.';
-			'serial_codes(''REQ_MICROSTEP'') = 43551;                   % (0xAA1F) Request the current microstepping multiplier.';
+			'otsc_codes(''MICROSTEP'') = 43550;                       % (0xAA1E) Set/report the microstepping multiplier.';
+			'otsc_codes(''REQ_MICROSTEP'') = 43551;                   % (0xAA1F) Request the current microstepping multiplier.';
 			'';
-			'serial_codes(''NUM_PADS'') = 43560;                        % (0xAA28) Set/report the number of texture positions on the carousel disc.';
-			'serial_codes(''REQ_NUM_PADS'') = 43561;                    % (0xAA29) Request the number of texture positions on the carousel disc.';
+			'otsc_codes(''NUM_PADS'') = 43560;                        % (0xAA28) Set/report the number of texture positions on the carousel disc.';
+			'otsc_codes(''REQ_NUM_PADS'') = 43561;                    % (0xAA29) Request the number of texture positions on the carousel disc.';
 			'';
-			'serial_codes(''CUR_PAD_I'') = 43570;                       % (0xAA32) Set/report the current texture position index.';
-			'serial_codes(''REQ_CUR_PAD_I'') = 43571;                   % (0xAA33) Return the current texture position index.';
-			'serial_codes(''PAD_LABEL'') = 43572;                       % (0xAA34) Set/report the current position label.';
-			'serial_codes(''REQ_PAD_LABEL'') = 43573;                   % (0xAA35) Return the current position label.';
-			'serial_codes(''ROTATE_CW'') = 43574;                       % (0xAA36) Rotate one position clockwise (viewed from above).';
-			'serial_codes(''ROTATE_CCW'') = 43575;                      % (0xAA37) Rotate one position counter-clockwise (viewed from above).';
+			'otsc_codes(''CUR_PAD_I'') = 43570;                       % (0xAA32) Set/report the current texture position index.';
+			'otsc_codes(''REQ_CUR_PAD_I'') = 43571;                   % (0xAA33) Return the current texture position index.';
+			'otsc_codes(''PAD_LABEL'') = 43572;                       % (0xAA34) Set/report the current position label.';
+			'otsc_codes(''REQ_PAD_LABEL'') = 43573;                   % (0xAA35) Return the current position label.';
+			'otsc_codes(''ROTATE_CW'') = 43574;                       % (0xAA36) Rotate one position clockwise (viewed from above).';
+			'otsc_codes(''ROTATE_CCW'') = 43575;                      % (0xAA37) Rotate one position counter-clockwise (viewed from above).';
 			'';
-			'serial_codes(''VOLTAGE_IN'') = 43776;                      % (0xAB00) Report the current input voltage to the device.';
-			'serial_codes(''REQ_VOLTAGE_IN'') = 43777;                  % (0xAB01) Request the current input voltage to the device.';
-			'serial_codes(''CURRENT_IN'') = 43778;                      % (0xAB02) Report the current input current to the device, in milliamps.';
-			'serial_codes(''REQ_CURRENT_IN'') = 43779;                  % (0xAB03) Request the current input current to the device, in milliamps.';
+			'otsc_codes(''VOLTAGE_IN'') = 43776;                      % (0xAB00) Report the current input voltage to the device.';
+			'otsc_codes(''REQ_VOLTAGE_IN'') = 43777;                  % (0xAB01) Request the current input voltage to the device.';
+			'otsc_codes(''CURRENT_IN'') = 43778;                      % (0xAB02) Report the current input current to the device, in milliamps.';
+			'otsc_codes(''REQ_CURRENT_IN'') = 43779;                  % (0xAB03) Request the current input current to the device, in milliamps.';
 			'';
-			'serial_codes(''COMM_VERIFY'') = 43981;                     % (0xABCD) Verify use of the OTSC serial code library, responding to a REQ_COMM_VERIFY block.';
+			'otsc_codes(''COMM_VERIFY'') = 43981;                     % (0xABCD) Verify use of the OTSC serial code library, responding to a REQ_COMM_VERIFY block.';
 			'';
-			'serial_codes(''PASSTHRU_DOWN'') = 48350;                   % (0xBCDE) Route the immediately following block downstream to the specified port or VPB device.';
-			'serial_codes(''PASSTHRU_UP'') = 48351;                     % (0xBCDF) Route the immediately following block upstream, typically to the controller or computer.';
-			'serial_codes(''PASSTHRU_HOLD'') = 48352;                   % (0xBCE0) Route all following blocks to the specified port or VPB device until the serial line is inactive for a set duration.';
-			'serial_codes(''PASSTHRU_HOLD_DUR'') = 48353;               % (0xBCE1) Set/report the timeout duration for a passthrough hold, in milliseconds.';
-			'serial_codes(''REQ_PASSTHRU_HOLD_DUR'') = 48354;           % (0xBCE2) Request the timeout duration for a passthrough hold, in milliseconds.';
+			'otsc_codes(''PASSTHRU_DOWN'') = 48350;                   % (0xBCDE) Route the immediately following block downstream to the specified port or VPB device.';
+			'otsc_codes(''PASSTHRU_UP'') = 48351;                     % (0xBCDF) Route the immediately following block upstream, typically to the controller or computer.';
+			'otsc_codes(''PASSTHRU_HOLD'') = 48352;                   % (0xBCE0) Route all following blocks to the specified port or VPB device until the serial line is inactive for a set duration.';
+			'otsc_codes(''PASSTHRU_HOLD_DUR'') = 48353;               % (0xBCE1) Set/report the timeout duration for a passthrough hold, in milliseconds.';
+			'otsc_codes(''REQ_PASSTHRU_HOLD_DUR'') = 48354;           % (0xBCE2) Request the timeout duration for a passthrough hold, in milliseconds.';
 			'';
-			'serial_codes(''REQ_OTMP_IOUT'') = 48368;                   % (0xBCF0) Request the OmniTrak Module Port (OTMP) output current for the specified port, in milliamps.';
-			'serial_codes(''OTMP_IOUT'') = 48369;                       % (0xBCF1) Report the OmniTrak Module Port (OTMP) output current for the specified port, in milliamps.';
-			'serial_codes(''REQ_OTMP_ACTIVE_PORTS'') = 48370;           % (0xBCF2) Request a bitmask indicating which OmniTrak Module Ports (OTMPs) are active based on current draw.';
-			'serial_codes(''OTMP_ACTIVE_PORTS'') = 48371;               % (0xBCF3) Report a bitmask indicating which OmniTrak Module Ports (OTMPs) are active based on current draw.';
-			'serial_codes(''REQ_OTMP_HIGH_VOLT'') = 48372;              % (0xBCF4) Request the current high voltage supply setting for the specified OmniTrak Module Port (0 = off <default>, 1 = high voltage enabled).';
-			'serial_codes(''OTMP_HIGH_VOLT'') = 48373;                  % (0xBCF5) Set/report the current high voltage supply setting for the specified OmniTrak Module Port (0 = off <default>, 1 = high voltage enabled).';
-			'serial_codes(''REQ_OTMP_OVERCURRENT_PORTS'') = 48374;      % (0xBCF6) Request a bitmask indicating which OmniTrak Module Ports (OTMPs) are in overcurrent shutdown.';
-			'serial_codes(''OTMP_OVERCURRENT_PORTS'') = 48375;          % (0xBCF7) Report a bitmask indicating which OmniTrak Module Ports (OTMPs) are in overcurrent shutdown.';
-			'serial_codes(''OTMP_ALERT_RESET'') = 48376;                % (0xBCF8) Send a reset pulse to the specified OmniTrak module port''s latched overcurrent comparator.';
-			'serial_codes(''REQ_OTMP_CHUNK_SIZE'') = 48377;             % (0xBCF9) Request the current serial "chunk" size required for transmission from the specified OmniTrak Module Port (OTMP), in bytes.';
-			'serial_codes(''OTMP_CHUNK_SIZE'') = 48378;                 % (0xBCFA) Set/report the current serial "chunk" size required for transmission from the specified OmniTrak Module Port (OTMP), in bytes.';
-			'serial_codes(''REQ_OTMP_PASSTHRU_TIMEOUT'') = 48379;       % (0xBCFB) Request the current serial "chunk" timeout for the specified OmniTrak Module Port (OTMP), in microseconds.';
-			'serial_codes(''OTMP_PASSTHRU_TIMEOUT'') = 48380;           % (0xBCFC) Set/report the current serial "chunk" timeout for the specified OmniTrak Module Port (OTMP), in microseconds.';
-			'serial_codes(''OTMP_RESET_CHUNKING'') = 48381;             % (0xBCFD) Reset the serial "chunk" size and "chunk" timeout to the defaults for all OmniTrak Module Ports (OTMPs).';
+			'otsc_codes(''REQ_OTMP_IOUT'') = 48368;                   % (0xBCF0) Request the OmniTrak Module Port (OTMP) output current for the specified port, in milliamps.';
+			'otsc_codes(''OTMP_IOUT'') = 48369;                       % (0xBCF1) Report the OmniTrak Module Port (OTMP) output current for the specified port, in milliamps.';
+			'otsc_codes(''REQ_OTMP_ACTIVE_PORTS'') = 48370;           % (0xBCF2) Request a bitmask indicating which OmniTrak Module Ports (OTMPs) are active based on current draw.';
+			'otsc_codes(''OTMP_ACTIVE_PORTS'') = 48371;               % (0xBCF3) Report a bitmask indicating which OmniTrak Module Ports (OTMPs) are active based on current draw.';
+			'otsc_codes(''REQ_OTMP_HIGH_VOLT'') = 48372;              % (0xBCF4) Request the current high voltage supply setting for the specified OmniTrak Module Port (0 = off <default>, 1 = high voltage enabled).';
+			'otsc_codes(''OTMP_HIGH_VOLT'') = 48373;                  % (0xBCF5) Set/report the current high voltage supply setting for the specified OmniTrak Module Port (0 = off <default>, 1 = high voltage enabled).';
+			'otsc_codes(''REQ_OTMP_OVERCURRENT_PORTS'') = 48374;      % (0xBCF6) Request a bitmask indicating which OmniTrak Module Ports (OTMPs) are in overcurrent shutdown.';
+			'otsc_codes(''OTMP_OVERCURRENT_PORTS'') = 48375;          % (0xBCF7) Report a bitmask indicating which OmniTrak Module Ports (OTMPs) are in overcurrent shutdown.';
+			'otsc_codes(''OTMP_ALERT_RESET'') = 48376;                % (0xBCF8) Send a reset pulse to the specified OmniTrak module port''s latched overcurrent comparator.';
+			'otsc_codes(''REQ_OTMP_CHUNK_SIZE'') = 48377;             % (0xBCF9) Request the current serial "chunk" size required for transmission from the specified OmniTrak Module Port (OTMP), in bytes.';
+			'otsc_codes(''OTMP_CHUNK_SIZE'') = 48378;                 % (0xBCFA) Set/report the current serial "chunk" size required for transmission from the specified OmniTrak Module Port (OTMP), in bytes.';
+			'otsc_codes(''REQ_OTMP_PASSTHRU_TIMEOUT'') = 48379;       % (0xBCFB) Request the current serial "chunk" timeout for the specified OmniTrak Module Port (OTMP), in microseconds.';
+			'otsc_codes(''OTMP_PASSTHRU_TIMEOUT'') = 48380;           % (0xBCFC) Set/report the current serial "chunk" timeout for the specified OmniTrak Module Port (OTMP), in microseconds.';
+			'otsc_codes(''OTMP_RESET_CHUNKING'') = 48381;             % (0xBCFD) Reset the serial "chunk" size and "chunk" timeout to the defaults for all OmniTrak Module Ports (OTMPs).';
 			'';
-			'serial_codes(''BROADCAST_OTMP'') = 48586;                  % (0xBDCA) Route the immediately following block to all available OmniTrak Module Ports (RJ45 jacks).';
+			'otsc_codes(''BROADCAST_OTMP'') = 48586;                  % (0xBDCA) Route the immediately following block to all available OmniTrak Module Ports (RJ45 jacks).';
 			'';
-			'serial_codes(''BLE_CONNECT'') = 49153;                     % (0xC001) Connect to a Bluetooth Low Energy (BLE) device that is advertising with a particular (local) name, address, or (service) UUID.';
-			'serial_codes(''BLE_DISCONNECT'') = 49154;                  % (0xC002) Disconnect from the currently connected Bluetooth Low Energy (BLE) device.';
-			'serial_codes(''BLE_CONNECTED'') = 49155;                   % (0xC003) Indicate that a Bluetooth Low Energy (BLE) device connection is active (0 = closed/inactive, 1 = active).';
-			'serial_codes(''REQ_BLE_CONNECTED'') = 49156;               % (0xC004) Request the Bluetooth Low Energy (BLE) device connection status.';
-			'serial_codes(''BLE_CHARACTERISTIC_WRITE'') = 49157;        % (0xC005) Write the specified bytes to the specified characteristic on the Bluetooth Low Energy (BLE) device.';
-			'serial_codes(''BLE_CHAR_NOTIFY'') = 49158;                 % (0xC006) Report a Bluetooth Low Energy (BLE) device characteristic notification value.';
-			'serial_codes(''BLE_SCAN'') = 49159;                        % (0xC007) Scan for all available BLE devices and return the addresses, local names, and service UUIDs of each one found.';
-			'serial_codes(''BLE_DEVICE_NAME'') = 49160;                 % (0xC008) Report the address, local name, and service UUID of an available BLE device.';
-			'serial_codes(''BLE_DEVICE_LIST_SERVICES'') = 49161;        % (0xC009) Request the list of available services from the connected BLE device.';
+			'otsc_codes(''BLE_CONNECT'') = 49153;                     % (0xC001) Connect to a Bluetooth Low Energy (BLE) device that is advertising with a particular (local) name, address, or (service) UUID.';
+			'otsc_codes(''BLE_DISCONNECT'') = 49154;                  % (0xC002) Disconnect from the currently connected Bluetooth Low Energy (BLE) device.';
+			'otsc_codes(''BLE_CONNECTED'') = 49155;                   % (0xC003) Indicate that a Bluetooth Low Energy (BLE) device connection is active (0 = closed/inactive, 1 = active).';
+			'otsc_codes(''REQ_BLE_CONNECTED'') = 49156;               % (0xC004) Request the Bluetooth Low Energy (BLE) device connection status.';
+			'otsc_codes(''BLE_CHARACTERISTIC_WRITE'') = 49157;        % (0xC005) Write the specified bytes to the specified characteristic on the Bluetooth Low Energy (BLE) device.';
+			'otsc_codes(''BLE_CHAR_NOTIFY'') = 49158;                 % (0xC006) Report a Bluetooth Low Energy (BLE) device characteristic notification value.';
+			'otsc_codes(''BLE_SCAN'') = 49159;                        % (0xC007) Scan for all available BLE devices and return the addresses, local names, and service UUIDs of each one found.';
+			'otsc_codes(''BLE_DEVICE_NAME'') = 49160;                 % (0xC008) Report the address, local name, and service UUID of an available BLE device.';
+			'otsc_codes(''BLE_DEVICE_LIST_SERVICES'') = 49161;        % (0xC009) Request the list of available services from the connected BLE device.';
 		};
 
 	case 'Vulintus_Load_OTSC_Packet_Info'
@@ -5410,797 +5560,881 @@ switch class_file_name
 			'%	Library documentation:';
 			'%	https://github.com/Vulintus/OmniTrak_Serial_Communication';
 			'%';
-			'%	This function was programmatically generated: 2025-06-09, 07:46:01 (UTC)';
+			'%	This function was programmatically generated: 2025-10-05, 06:33:23 (UTC)';
 			'%';
 			'';
 			'packet_info = dictionary;';
 			'';
 			'';
-			'% DEVICE_ID (0x0003): Set/report the device type ID number.';
+			'%  DEVICE_ID (0x0003): Set/report the device type ID number.';
 			'packet_info(3) = struct(		''name'',			''DEVICE_ID'',...';
 			'								''payload'',		{{1, ''uint16''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% USERSET_ALIAS (0x0005): Set/report the user-set name for the device.';
+			'%  USERSET_ALIAS (0x0005): Set/report the user-set name for the device.';
 			'packet_info(5) = struct(		''name'',			''USERSET_ALIAS'',...';
 			'								''payload'',		{{NaN, ''char''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	false);';
 			'';
 			'';
-			'% VULINTUS_ALIAS (0x0007): Set/report the Vulintus alias (adjective/noun serial number) for the device.';
+			'%  VULINTUS_ALIAS (0x0007): Set/report the Vulintus alias (adjective/noun serial number) for the device.';
 			'packet_info(7) = struct(		''name'',			''VULINTUS_ALIAS'',...';
 			'								''payload'',		{{NaN, ''char''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	false);';
 			'';
 			'';
-			'% BOARD_VER (0x0009): Report the circuit board version number.';
+			'%  BOARD_VER (0x0009): Report the circuit board version number.';
 			'packet_info(9) = struct(		''name'',			''BOARD_VER'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% MCU_SERIALNUM (0x000D): Report the device microcontroller serial number.';
+			'%  MCU_SERIALNUM (0x000D): Report the device microcontroller serial number.';
 			'packet_info(13) = struct(		''name'',			''MCU_SERIALNUM'',...';
 			'								''payload'',		{{NaN, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	false);';
 			'';
 			'';
-			'% MAX_BAUDRATE (0x000F): Report the maximum serial baud rate for supported by the device, in Hz.';
+			'%  MAX_BAUDRATE (0x000F): Report the maximum serial baud rate for supported by the device, in Hz.';
 			'packet_info(15) = struct(		''name'',			''MAX_BAUDRATE'',...';
 			'								''payload'',		{{1, ''uint32''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% PROGRAM_MODE (0x0012): Set/report the current firmware program mode.';
+			'%  PROGRAM_MODE (0x0012): Set/report the current firmware program mode.';
 			'packet_info(18) = struct(		''name'',			''PROGRAM_MODE'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% MILLIS_MICROS (0x0014): Report the microcontroller''s current millisecond and microsecond clock readings.';
+			'%  MILLIS_MICROS (0x0014): Report the microcontroller''s current millisecond and microsecond clock readings.';
 			'packet_info(20) = struct(		''name'',			''MILLIS_MICROS'',...';
 			'								''payload'',		{{2, ''uint32''}},...';
 			'								''min_bytes'',	10,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% FW_FILENAME (0x0015): Report the firmware filename.';
+			'%  FW_FILENAME (0x0015): Report the firmware filename.';
 			'packet_info(21) = struct(		''name'',			''FW_FILENAME'',...';
 			'								''payload'',		{{NaN, ''char''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	false);';
 			'';
 			'';
-			'% FW_DATE (0x0017): Report the firmware upload date.';
+			'%  FW_DATE (0x0017): Report the firmware upload date.';
 			'packet_info(23) = struct(		''name'',			''FW_DATE'',...';
 			'								''payload'',		{{NaN, ''char''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	false);';
 			'';
 			'';
-			'% FW_TIME (0x0019): Report the firmware upload time.';
+			'%  FW_TIME (0x0019): Report the firmware upload time.';
 			'packet_info(25) = struct(		''name'',			''FW_TIME'',...';
 			'								''payload'',		{{NaN, ''char''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	false);';
 			'';
 			'';
-			'% UNKNOWN_BLOCK_ERROR (0x0021): Indicate an unknown block code error.';
+			'%  UNKNOWN_BLOCK_ERROR (0x0021): Indicate an unknown block code error.';
 			'packet_info(33) = struct(		''name'',			''UNKNOWN_BLOCK_ERROR'',...';
-			'								''payload'',		{{1, ''uint16''}},...';
-			'								''min_bytes'',	4,...';
+			'								''payload'',		{{2, ''uint16''}},...';
+			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% ERROR_INDICATOR (0x0022): Indicate an error and send the associated error code.';
+			'%  ERROR_INDICATOR (0x0022): Indicate an error and send the associated error code.';
 			'packet_info(34) = struct(		''name'',			''ERROR_INDICATOR'',...';
 			'								''payload'',		{{1, ''uint16''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% REBOOTING (0x0023): Indicate that the device is rebooting.';
+			'%  REBOOTING (0x0023): Indicate that the device is rebooting.';
 			'packet_info(35) = struct(		''name'',			''REBOOTING'',...';
 			'								''payload'',		{{}},...';
 			'								''min_bytes'',	2,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CUR_FEEDER (0x0033): Set/report the current dispenser index.';
+			'%  CUR_FEEDER (0x0033): Set/report the current dispenser index.';
 			'packet_info(51) = struct(		''name'',			''CUR_FEEDER'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% DISPENSE_FIRMWARE (0x0038): Report that a feeding was automatically triggered in the device firmware.';
+			'%  DISPENSE_FIRMWARE (0x0038): Report that a feeding was automatically triggered in the device firmware.';
 			'packet_info(56) = struct(		''name'',			''DISPENSE_FIRMWARE'',...';
 			'								''payload'',		{{1, ''uint32''; 1, ''uint8''}},...';
 			'								''min_bytes'',	7,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% HOMING_COMPLETE (0x003C): Indicate that a module''s homing routine is complete.';
+			'%  HOMING_COMPLETE (0x003C): Indicate that a module''s homing routine is complete.';
 			'packet_info(60) = struct(		''name'',			''HOMING_COMPLETE'',...';
 			'								''payload'',		{{1, ''uint32''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% MOVEMENT_START (0x003D): Indicate that a linear/rotary movement has started.';
+			'%  MOVEMENT_START (0x003D): Indicate that a linear/rotary movement has started.';
 			'packet_info(61) = struct(		''name'',			''MOVEMENT_START'',...';
 			'								''payload'',		{{1, ''uint32''; 1, ''uint8''; 1, ''single''}},...';
 			'								''min_bytes'',	11,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CUR_POS_UNITS (0x0043): Set/report the current position of the module movement, in millimeters or degrees.';
+			'%  MOVEMENT_COMPLETE (0x003E): Indicate that a linear/rotary movement is complete.';
+			'packet_info(62) = struct(		''name'',			''MOVEMENT_COMPLETE'',...';
+			'								''payload'',		{{1, ''uint32''; 1, ''uint8''; 1, ''single''}},...';
+			'								''min_bytes'',	11,...';
+			'								''fixed_size'',	true);';
+			'';
+			'';
+			'%  TARGET_POS_UNITS (0x0041): Set/report the target position of a module movement, in millimeters or degrees.';
+			'packet_info(65) = struct(		''name'',			''TARGET_POS_UNITS'',...';
+			'								''payload'',		{{1, ''single''}},...';
+			'								''min_bytes'',	6,...';
+			'								''fixed_size'',	true);';
+			'';
+			'';
+			'%  CUR_POS_UNITS (0x0043): Set/report the current position of the module movement, in millimeters or degrees.';
 			'packet_info(67) = struct(		''name'',			''CUR_POS_UNITS'',...';
 			'								''payload'',		{{1, ''single''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% MIN_POS_UNITS (0x0045): Set/report the current minimum position of a module movement, in millimeters or degrees.';
+			'%  MIN_POS_UNITS (0x0045): Set/report the current minimum position of a module movement, in millimeters or degrees.';
 			'packet_info(69) = struct(		''name'',			''MIN_POS_UNITS'',...';
 			'								''payload'',		{{1, ''single''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% MAX_POS_UNITS (0x0047): Set/report the current maximum position of a module movement, in millimeters or degrees.';
+			'%  MAX_POS_UNITS (0x0047): Set/report the current maximum position of a module movement, in millimeters or degrees.';
 			'packet_info(71) = struct(		''name'',			''MAX_POS_UNITS'',...';
 			'								''payload'',		{{1, ''single''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% MIN_SPEED_UNITS_S (0x0049): Set/report the current minimum speed (i.e. motor start speed), in mm/s or deg/s.';
+			'%  MIN_SPEED_UNITS_S (0x0049): Set/report the current minimum speed (i.e. motor start speed), in mm/s or deg/s.';
 			'packet_info(73) = struct(		''name'',			''MIN_SPEED_UNITS_S'',...';
 			'								''payload'',		{{1, ''single''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% MAX_SPEED_UNITS_S (0x0051): Set/report the current maximum speed, in mm/s or deg/s.';
+			'%  MAX_SPEED_UNITS_S (0x0051): Set/report the current maximum speed, in mm/s or deg/s.';
 			'packet_info(81) = struct(		''name'',			''MAX_SPEED_UNITS_S'',...';
 			'								''payload'',		{{1, ''single''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% ACCEL_UNITS_S2 (0x0053): Set/report the current movement acceleration, in mm/s^2 or deg/s^2^2.';
+			'%  ACCEL_UNITS_S2 (0x0053): Set/report the current movement acceleration, in mm/s^2 or deg/s^2^2.';
 			'packet_info(83) = struct(		''name'',			''ACCEL_UNITS_S2'',...';
 			'								''payload'',		{{1, ''single''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% MOTOR_CURRENT (0x0055): Set/report the current motor current setting, in milliamps.';
+			'%  MOTOR_CURRENT (0x0055): Set/report the current motor current setting, in milliamps.';
 			'packet_info(85) = struct(		''name'',			''MOTOR_CURRENT'',...';
 			'								''payload'',		{{1, ''uint16''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% MAX_MOTOR_CURRENT (0x0057): Set/report the maximum possible motor current, in milliamps.';
+			'%  MAX_MOTOR_CURRENT (0x0057): Set/report the maximum possible motor current, in milliamps.';
 			'packet_info(87) = struct(		''name'',			''MAX_MOTOR_CURRENT'',...';
 			'								''payload'',		{{1, ''uint16''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% FW_STALL_DETECTION (0x0059): Set/report the firmware-based stall detection setting, on or off.';
+			'%  FW_STALL_DETECTION (0x0059): Set/report the firmware-based stall detection setting, on or off.';
 			'packet_info(89) = struct(		''name'',			''FW_STALL_DETECTION'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% HW_STALL_DETECTION (0x005B): Set/report the hardware-based stall detection setting, on or off.';
+			'%  HW_STALL_DETECTION (0x005B): Set/report the hardware-based stall detection setting, on or off.';
 			'packet_info(91) = struct(		''name'',			''HW_STALL_DETECTION'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% STALL_THRESH (0x005D): Set/report the current stall threshold, 0-4095.';
+			'%  STALL_THRESH (0x005D): Set/report the current stall threshold, 0-4095.';
 			'packet_info(93) = struct(		''name'',			''STALL_THRESH'',...';
 			'								''payload'',		{{1, ''uint16''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% TRQ_SCALING (0x005F): Set/report the torque count scaling setting, 1x or 8x.';
+			'%  TRQ_SCALING (0x005F): Set/report the torque count scaling setting, 1x or 8x.';
 			'packet_info(95) = struct(		''name'',			''TRQ_SCALING'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% TRQ_COUNT (0x0061): Set/report the current torque count, 0-4095.';
+			'%  TRQ_COUNT (0x0061): Set/report the current torque count, 0-4095.';
 			'packet_info(97) = struct(		''name'',			''TRQ_COUNT'',...';
 			'								''payload'',		{{1, ''uint16''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% MOTOR_STALL (0x0062): Report a motor stall.';
+			'%  MOTOR_STALL (0x0062): Report a motor stall.';
 			'packet_info(98) = struct(		''name'',			''MOTOR_STALL'',...';
 			'								''payload'',		{{1, ''uint32''; 1, ''uint8''; 1, ''single''}},...';
 			'								''min_bytes'',	11,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% MOTOR_FAULT (0x0063): Report a motor fault, other than a stall (i.e. undervoltage, overcurrent, overtemperature).';
+			'%  MOTOR_FAULT (0x0063): Report a motor fault, other than a stall (i.e. undervoltage, overcurrent, overtemperature).';
 			'packet_info(99) = struct(		''name'',			''MOTOR_FAULT'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% STREAM_PERIOD (0x0065): Set/report the current streaming period, in milliseconds.';
+			'%  STREAM_PERIOD (0x0065): Set/report the current streaming period, in milliseconds.';
 			'packet_info(101) = struct(		''name'',			''STREAM_PERIOD'',...';
 			'								''payload'',		{{1, ''uint32''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% STREAM_ENABLE (0x0067): Enable/disable streaming from the device.';
+			'%  STREAM_ENABLE (0x0067): Enable/disable streaming from the device.';
 			'packet_info(103) = struct(		''name'',			''STREAM_ENABLE'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% DISPENSER_READY (0x0090): Report that a dispenser has prepared a reward (i.e. a pellet) for dispensing.';
+			'%  DISPENSER_READY (0x0090): Report that a dispenser has prepared a reward (i.e. a pellet) for dispensing.';
 			'packet_info(144) = struct(		''name'',			''DISPENSER_READY'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% DISPENSER_EMPTY (0x0092): Report that a dispenser is empty or cannot detect an available reward.';
+			'%  DISPENSER_EMPTY (0x0092): Report that a dispenser is empty or cannot detect an available reward.';
 			'packet_info(146) = struct(		''name'',			''DISPENSER_EMPTY'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% MAX_RELOAD_ATTEMPTS (0x0095): Set/report the current maximum number of reload attempts.';
+			'%  MAX_RELOAD_ATTEMPTS (0x0095): Set/report the current maximum number of reload attempts.';
 			'packet_info(149) = struct(		''name'',			''MAX_RELOAD_ATTEMPTS'',...';
 			'								''payload'',		{{1, ''uint8''; 1, ''uint8''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% NUM_TONES (0x0103): Report the number of queueable tones.';
+			'%  NUM_TONES (0x0103): Report the number of queueable tones.';
 			'packet_info(259) = struct(		''name'',			''NUM_TONES'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% TONE_INDEX (0x0104): Set/report the current tone index.';
+			'%  TONE_INDEX (0x0104): Set/report the current tone index.';
 			'packet_info(260) = struct(		''name'',			''TONE_INDEX'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% TONE_FREQ (0x0106): Set/report the frequency of the current tone, in Hertz.';
+			'%  TONE_FREQ (0x0106): Set/report the frequency of the current tone, in Hertz.';
 			'packet_info(262) = struct(		''name'',			''TONE_FREQ'',...';
 			'								''payload'',		{{1, ''uint16''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% TONE_DUR (0x0108): Set/report the duration of the current tone, in milliseconds.';
+			'%  TONE_DUR (0x0108): Set/report the duration of the current tone, in milliseconds.';
 			'packet_info(264) = struct(		''name'',			''TONE_DUR'',...';
 			'								''payload'',		{{1, ''uint16''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% TONE_VOLUME (0x010A): Set/report the volume of the current tone, normalized from 0 to 1.';
+			'%  TONE_VOLUME (0x010A): Set/report the volume of the current tone, normalized from 0 to 1.';
 			'packet_info(266) = struct(		''name'',			''TONE_VOLUME'',...';
 			'								''payload'',		{{1, ''single''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% NUM_CUE_LIGHTS (0x0182): Report the number of queueable cue lights.';
+			'%  CUE_LIGHT_ON (0x0180): Turn on the specified cue light.';
+			'packet_info(384) = struct(		''name'',			''CUE_LIGHT_ON'',...';
+			'								''payload'',		{{2, ''uint8''}},...';
+			'								''min_bytes'',	4,...';
+			'								''fixed_size'',	true);';
+			'';
+			'';
+			'%  CUE_LIGHT_OFF (0x0181): Turn off any currently-showing cue light.';
+			'packet_info(385) = struct(		''name'',			''CUE_LIGHT_OFF'',...';
+			'								''payload'',		{{1, ''uint8''}},...';
+			'								''min_bytes'',	3,...';
+			'								''fixed_size'',	true);';
+			'';
+			'';
+			'%  NUM_CUE_LIGHTS (0x0182): Report the number of queueable cue lights.';
 			'packet_info(386) = struct(		''name'',			''NUM_CUE_LIGHTS'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CUE_LIGHT_INDEX (0x0184): Set/report the current cue light index.';
+			'%  CUE_LIGHT_INDEX (0x0184): Set/report the current cue light index.';
 			'packet_info(388) = struct(		''name'',			''CUE_LIGHT_INDEX'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CUE_LIGHT_QUEUE_SIZE (0x018C): Set/report the number of queueable cue light stimuli.';
+			'%  CUE_LIGHT_RGBW (0x0186): Set/report the RGBW values for the current cue light (0-255).';
+			'packet_info(390) = struct(		''name'',			''CUE_LIGHT_RGBW'',...';
+			'								''payload'',		{{6, ''uint8''}},...';
+			'								''min_bytes'',	8,...';
+			'								''fixed_size'',	true);';
+			'';
+			'';
+			'%  CUE_LIGHT_DUR (0x0188): Set/report the current cue light duration, in milliseconds.';
+			'packet_info(392) = struct(		''name'',			''CUE_LIGHT_DUR'',...';
+			'								''payload'',		{{2, ''uint8''; 1, ''uint16''}},...';
+			'								''min_bytes'',	6,...';
+			'								''fixed_size'',	true);';
+			'';
+			'';
+			'%  CUE_LIGHT_ON_MASK (0x018A): Turn on the cue lights specified by the bits in a 16-bit bitmask.';
+			'packet_info(394) = struct(		''name'',			''CUE_LIGHT_ON_MASK'',...';
+			'								''payload'',		{{1, ''uint16''}},...';
+			'								''min_bytes'',	4,...';
+			'								''fixed_size'',	true);';
+			'';
+			'';
+			'%  CUE_LIGHT_QUEUE_SIZE (0x018C): Set/report the number of queueable cue light stimuli.';
 			'packet_info(396) = struct(		''name'',			''CUE_LIGHT_QUEUE_SIZE'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CUE_LIGHT_QUEUE_INDEX (0x018E): Set/report the current cue light queue index.';
+			'%  CUE_LIGHT_QUEUE_INDEX (0x018E): Set/report the current cue light queue index. *DEPRECATED*';
 			'packet_info(398) = struct(		''name'',			''CUE_LIGHT_QUEUE_INDEX'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% POKE_BITMASK (0x0200): Set/report the current nosepoke status bitmask.';
-			'packet_info(512) = struct(		''name'',			''POKE_BITMASK'',...';
+			'%  IR_DET_BITMASK (0x0200): Set/report the current nosepoke status bitmask.';
+			'packet_info(512) = struct(		''name'',			''IR_DET_BITMASK'',...';
 			'								''payload'',		{{1, ''uint32''; 1, ''uint8''}},...';
 			'								''min_bytes'',	7,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% POKE_ADC (0x0202): Report the current nosepoke analog reading (returns both the filtered and raw value).';
-			'packet_info(514) = struct(		''name'',			''POKE_ADC'',...';
+			'%  IR_DET_ADC (0x0202): Report the current nosepoke analog reading (returns both the filtered and raw value).';
+			'packet_info(514) = struct(		''name'',			''IR_DET_ADC'',...';
 			'								''payload'',		{{1, ''uint8''; 1, ''uint32''; 2, ''uint16''}},...';
 			'								''min_bytes'',	11,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% POKE_MINMAX (0x0204): Set/report the minimum and maximum ADC values of the nosepoke infrared sensor history, in ADC ticks.';
-			'packet_info(516) = struct(		''name'',			''POKE_MINMAX'',...';
+			'%  IR_DET_MINMAX (0x0204): Set/report the minimum and maximum ADC values of the nosepoke infrared sensor history, in ADC ticks.';
+			'packet_info(516) = struct(		''name'',			''IR_DET_MINMAX'',...';
 			'								''payload'',		{{1, ''uint8''; 2, ''uint16''}},...';
 			'								''min_bytes'',	7,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% POKE_THRESH_FL (0x0206): Set/report the current nosepoke threshold setting, normalized from 0 to 1.';
-			'packet_info(518) = struct(		''name'',			''POKE_THRESH_FL'',...';
+			'%  IR_DET_THRESH_FL (0x0206): Set/report the current nosepoke threshold setting, normalized from 0 to 1.';
+			'packet_info(518) = struct(		''name'',			''IR_DET_THRESH_FL'',...';
 			'								''payload'',		{{1, ''uint8''; 1, ''single''}},...';
 			'								''min_bytes'',	7,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% POKE_THRESH_ADC (0x0208): Set/report the current nosepoke threshold setting, in ADC ticks.';
-			'packet_info(520) = struct(		''name'',			''POKE_THRESH_ADC'',...';
+			'%  IR_DET_THRESH_ADC (0x0208): Set/report the current nosepoke threshold setting, in ADC ticks.';
+			'packet_info(520) = struct(		''name'',			''IR_DET_THRESH_ADC'',...';
 			'								''payload'',		{{1, ''uint8''; 1, ''uint16''}},...';
 			'								''min_bytes'',	5,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% POKE_THRESH_AUTO (0x020A): Set/report the current nosepoke auto-thresholding setting (0 = fixed, 1 = autoset).';
-			'packet_info(522) = struct(		''name'',			''POKE_THRESH_AUTO'',...';
+			'%  IR_DET_THRESH_AUTO (0x020A): Set/report the current nosepoke auto-thresholding setting (0 = fixed, 1 = autoset).';
+			'packet_info(522) = struct(		''name'',			''IR_DET_THRESH_AUTO'',...';
 			'								''payload'',		{{2, ''uint8''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% POKE_INDEX (0x020D): Set/report the current nosepoke index for multi-nosepoke modules.';
-			'packet_info(525) = struct(		''name'',			''POKE_INDEX'',...';
+			'%  IR_DET_INDEX (0x020D): Set/report the current nosepoke index for multi-nosepoke modules.';
+			'packet_info(525) = struct(		''name'',			''IR_DET_INDEX'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% POKE_MIN_RANGE (0x020F): Set/report the minimum signal range for positive detection with the current nosepoke, in ADC ticks.';
-			'packet_info(527) = struct(		''name'',			''POKE_MIN_RANGE'',...';
+			'%  IR_DET_MIN_RANGE (0x020F): Set/report the minimum signal range for positive detection with the current nosepoke, in ADC ticks.';
+			'packet_info(527) = struct(		''name'',			''IR_DET_MIN_RANGE'',...';
 			'								''payload'',		{{1, ''uint8''; 1, ''uint16''}},...';
 			'								''min_bytes'',	5,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% POKE_LOWPASS_CUTOFF (0x0211): Set/report the current nosepoke sensor low-pass filter cutoff frequency, in Hz.';
-			'packet_info(529) = struct(		''name'',			''POKE_LOWPASS_CUTOFF'',...';
+			'%  IR_DET_LOWPASS_CUTOFF (0x0211): Set/report the current nosepoke sensor low-pass filter cutoff frequency, in Hz.';
+			'packet_info(529) = struct(		''name'',			''IR_DET_LOWPASS_CUTOFF'',...';
 			'								''payload'',		{{1, ''uint8''; 1, ''single''}},...';
 			'								''min_bytes'',	7,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CAPSENSE_BITMASK (0x0270): Set/report the current capacitive sensor status bitmask.';
+			'%  CAPSENSE_BITMASK (0x0270): Set/report the current capacitive sensor status bitmask.';
 			'packet_info(624) = struct(		''name'',			''CAPSENSE_BITMASK'',...';
 			'								''payload'',		{{1, ''uint32''; 1, ''uint8''}},...';
 			'								''min_bytes'',	7,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CAPSENSE_INDEX (0x0272): Set/report the current capacitive sensor index.';
+			'%  CAPSENSE_INDEX (0x0272): Set/report the current capacitive sensor index.';
 			'packet_info(626) = struct(		''name'',			''CAPSENSE_INDEX'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CAPSENSE_SENSITIVITY (0x0274): Set/report the current capacitive sensor sensitivity setting, normalized from 0 to 1.';
+			'%  CAPSENSE_SENSITIVITY (0x0274): Set/report the current capacitive sensor sensitivity setting, normalized from 0 to 1.';
 			'packet_info(628) = struct(		''name'',			''CAPSENSE_SENSITIVITY'',...';
 			'								''payload'',		{{1, ''uint8''; 1, ''single''}},...';
 			'								''min_bytes'',	7,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CAPSENSE_VALUE (0x0280): Report the current capacitance sensor reading, in ADC ticks or clock cycles.';
+			'%  CAPSENSE_VALUE (0x0280): Report the current capacitance sensor reading, in ADC ticks or clock cycles.';
 			'packet_info(640) = struct(		''name'',			''CAPSENSE_VALUE'',...';
 			'								''payload'',		{{1, ''uint32''; 2, ''uint8''; 2, ''uint16''}},...';
 			'								''min_bytes'',	12,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CAPSENSE_MINMAX (0x0282): Report the minimum and maximum values of the current capacitive sensor''s history.';
+			'%  CAPSENSE_MINMAX (0x0282): Report the minimum and maximum values of the current capacitive sensor''s history.';
 			'packet_info(642) = struct(		''name'',			''CAPSENSE_MINMAX'',...';
 			'								''payload'',		{{1, ''uint8''; 2, ''uint16''}},...';
 			'								''min_bytes'',	7,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CAPSENSE_MIN_RANGE (0x0284): Set/report the minimum signal range for positive detection with the current capacitive sensor.';
+			'%  CAPSENSE_MIN_RANGE (0x0284): Set/report the minimum signal range for positive detection with the current capacitive sensor.';
 			'packet_info(644) = struct(		''name'',			''CAPSENSE_MIN_RANGE'',...';
 			'								''payload'',		{{1, ''uint8''; 1, ''uint16''}},...';
 			'								''min_bytes'',	5,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CAPSENSE_THRESH_FIXED (0x0286): Set/report a fixed threshold for the current capacitive sensor, in ADC ticks or clock cycles.';
+			'%  CAPSENSE_THRESH_FIXED (0x0286): Set/report a fixed threshold for the current capacitive sensor, in ADC ticks or clock cycles.';
 			'packet_info(646) = struct(		''name'',			''CAPSENSE_THRESH_FIXED'',...';
 			'								''payload'',		{{1, ''uint8''; 1, ''uint16''}},...';
 			'								''min_bytes'',	5,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CAPSENSE_THRESH_AUTO (0x0288): Set/report the current capacitive sensor auto-thresholding setting (0 = fixed, 1 = autoset <default>).';
+			'%  CAPSENSE_THRESH_AUTO (0x0288): Set/report the current capacitive sensor auto-thresholding setting (0 = fixed, 1 = autoset <default>).';
 			'packet_info(648) = struct(		''name'',			''CAPSENSE_THRESH_AUTO'',...';
 			'								''payload'',		{{2, ''uint8''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CAPSENSE_RESET_TIMEOUT (0x028A): Set/report the current capacitive sensor reset timeout duration, in milliseconds (0 = no time-out reset).';
+			'%  CAPSENSE_RESET_TIMEOUT (0x028A): Set/report the current capacitive sensor reset timeout duration, in milliseconds (0 = no time-out reset).';
 			'packet_info(650) = struct(		''name'',			''CAPSENSE_RESET_TIMEOUT'',...';
 			'								''payload'',		{{1, ''uint8''; 1, ''uint16''}},...';
 			'								''min_bytes'',	5,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CAPSENSE_SAMPLE_SIZE (0x028C): Set/report the current capacitive sensor repeated measurement sample size.';
+			'%  CAPSENSE_SAMPLE_SIZE (0x028C): Set/report the current capacitive sensor repeated measurement sample size.';
 			'packet_info(652) = struct(		''name'',			''CAPSENSE_SAMPLE_SIZE'',...';
 			'								''payload'',		{{2, ''uint8''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CAPSENSE_HIGHPASS_CUTOFF (0x0292): Set/report the current capacitive sensor high-pass filter cutoff frequency, in Hz.';
+			'%  CAPSENSE_HIGHPASS_CUTOFF (0x0292): Set/report the current capacitive sensor high-pass filter cutoff frequency, in Hz.';
 			'packet_info(658) = struct(		''name'',			''CAPSENSE_HIGHPASS_CUTOFF'',...';
 			'								''payload'',		{{1, ''uint8''; 1, ''single''}},...';
 			'								''min_bytes'',	7,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CAPSENSE_LOWPASS_CUTOFF (0x0296): Set/report the current capacitive sensor low-pass filter cutoff frequency, in Hz.';
+			'%  CAPSENSE_LOWPASS_CUTOFF (0x0296): Set/report the current capacitive sensor low-pass filter cutoff frequency, in Hz.';
 			'packet_info(662) = struct(		''name'',			''CAPSENSE_LOWPASS_CUTOFF'',...';
 			'								''payload'',		{{1, ''uint8''; 1, ''single''}},...';
 			'								''min_bytes'',	7,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% THERM_PIXELS_FP62 (0x0303): Report a thermal pixel image as a fixed-point 6/2 type (6 bits for the unsigned integer part, 2 bits for the decimal part), in units of Celcius. This allows temperatures from 0 to 63.75 C.';
+			'%  THERM_PIXELS_FP62 (0x0303): Report a thermal pixel image as a fixed-point 6/2 type (6 bits for the unsigned integer part, 2 bits for the decimal part), in units of Celcius. This allows temperatures from 0 to 63.75 C.';
 			'packet_info(771) = struct(		''name'',			''THERM_PIXELS_FP62'',...';
 			'								''payload'',		{{1, ''uint32''; 1027, ''uint8''}},...';
 			'								''min_bytes'',	1033,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% THERM_XY_PIX (0x0311): Report the current thermal hotspot x-y position, in units of pixels.';
+			'%  THERM_XY_PIX (0x0311): Report the current thermal hotspot x-y position, in units of pixels.';
 			'packet_info(785) = struct(		''name'',			''THERM_XY_PIX'',...';
 			'								''payload'',		{{1, ''uint32''; 3, ''uint8''; 1, ''single''}},...';
 			'								''min_bytes'',	13,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% OPTICAL_FLOW_XY (0x0401): Report the current x- and y-coordinates from the currently-selected optical flow sensor, as 32-bit integers.';
+			'%  OPTICAL_FLOW_XY (0x0401): Report the current x- and y-coordinates from the currently-selected optical flow sensor, as 32-bit integers.';
 			'packet_info(1025) = struct(		''name'',			''OPTICAL_FLOW_XY'',...';
-			'								''payload'',		{{1, ''uint32''; 1, ''uint8''; 2, ''int32''}},...';
+			'								''payload'',		{{1, ''uint8''; 1, ''uint32''; 2, ''int32''}},...';
 			'								''min_bytes'',	15,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% OPTICAL_FLOW_DELTA_XY (0x0403): Report the current change in x- and y-coordinates from the currently-selected optical flow sensor, as 32-bit integers.';
+			'%  OPTICAL_FLOW_DELTA_XY (0x0403): Report the current change in x- and y-coordinates from the currently-selected optical flow sensor, as 32-bit integers.';
 			'packet_info(1027) = struct(		''name'',			''OPTICAL_FLOW_DELTA_XY'',...';
-			'								''payload'',		{{1, ''uint32''; 1, ''uint8''; 2, ''int32''}},...';
+			'								''payload'',		{{1, ''uint8''; 1, ''uint32''; 2, ''int32''}},...';
 			'								''min_bytes'',	15,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% OPTICAL_FLOW_DELTA_3VEC (0x0405): Report the current change in value from the three selected optical flow vectors, as 16-bit integers.';
+			'%  OPTICAL_FLOW_DELTA_3VEC (0x0405): Report the current change in value from the three selected optical flow vectors, as 16-bit integers.';
 			'packet_info(1029) = struct(		''name'',			''OPTICAL_FLOW_DELTA_3VEC'',...';
-			'								''payload'',		{{1, ''uint32''; 3, ''int32''}},...';
-			'								''min_bytes'',	18,...';
+			'								''payload'',		{{1, ''uint32''; 3, ''int16''}},...';
+			'								''min_bytes'',	12,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% TTL_INDEX (0x0501): Set/report the current TTL I/O index.';
+			'%  TTL_INDEX (0x0501): Set/report the current TTL I/O index.';
 			'packet_info(1281) = struct(		''name'',			''TTL_INDEX'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% TTL_PULSE_OFF_VAL (0x0507): Set/report the current TTL pulse "off" value.';
+			'%  TTL_PULSE_DUR (0x0505): Set/report the current TTL pulse duration, in milliseconds.';
+			'packet_info(1285) = struct(		''name'',			''TTL_PULSE_DUR'',...';
+			'								''payload'',		{{1, ''uint8''; 1, ''uint16''}},...';
+			'								''min_bytes'',	5,...';
+			'								''fixed_size'',	true);';
+			'';
+			'';
+			'%  TTL_PULSE_OFF_VAL (0x0507): Set/report the current TTL pulse "off" value.';
 			'packet_info(1287) = struct(		''name'',			''TTL_PULSE_OFF_VAL'',...';
-			'								''payload'',		{{1, ''single''}},...';
-			'								''min_bytes'',	6,...';
+			'								''payload'',		{{1, ''uint8''; 1, ''single''}},...';
+			'								''min_bytes'',	7,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% TTL_PULSE_ON_VAL (0x0508): Set/report the current TTL pulse "on" value.';
+			'%  TTL_PULSE_ON_VAL (0x0508): Set/report the current TTL pulse "on" value.';
 			'packet_info(1288) = struct(		''name'',			''TTL_PULSE_ON_VAL'',...';
-			'								''payload'',		{{1, ''single''}},...';
-			'								''min_bytes'',	6,...';
+			'								''payload'',		{{1, ''uint8''; 1, ''single''}},...';
+			'								''min_bytes'',	7,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% TTL_XINT_THRESH (0x050B): Set/report the current TTL input pseudo-interrupt threshold.';
+			'%  TTL_XINT_THRESH (0x050B): Set/report the current TTL input pseudo-interrupt threshold.';
 			'packet_info(1291) = struct(		''name'',			''TTL_XINT_THRESH'',...';
-			'								''payload'',		{{1, ''single''}},...';
-			'								''min_bytes'',	6,...';
+			'								''payload'',		{{1, ''uint8''; 1, ''single''}},...';
+			'								''min_bytes'',	7,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% TTL_DIGITAL_BITMASK (0x0510): Report the current TTL digital status bitmask.';
+			'%  TTL_XINT_MODE (0x050D): Set/report the current TTL input pseudo-interrupt mode.';
+			'packet_info(1293) = struct(		''name'',			''TTL_XINT_MODE'',...';
+			'								''payload'',		{{1, ''uint8''; 1, ''uint8''}},...';
+			'								''min_bytes'',	4,...';
+			'								''fixed_size'',	true);';
+			'';
+			'';
+			'%  TTL_DIGITAL_BITMASK (0x0510): Report the current TTL digital status bitmask.';
 			'packet_info(1296) = struct(		''name'',			''TTL_DIGITAL_BITMASK'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% TTL_AIN (0x0513): Report the specified TTL I/O''s analog input value.';
+			'%  TTL_AIN (0x0513): Report the specified TTL I/O''s analog input value.';
 			'packet_info(1299) = struct(		''name'',			''TTL_AIN'',...';
 			'								''payload'',		{{1, ''uint8''; 1, ''uint32''; 1, ''single''}},...';
 			'								''min_bytes'',	11,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% VIB_DUR (0x4000): Set/report the current vibration pulse duration, in microseconds.';
+			'%  TTL_NUM_PULSES (0x0515): Set/report the current number of pulses in the TTL pulsetrain.';
+			'packet_info(1301) = struct(		''name'',			''TTL_NUM_PULSES'',...';
+			'								''payload'',		{{1, ''uint8''; 1, ''uint16''}},...';
+			'								''min_bytes'',	5,...';
+			'								''fixed_size'',	true);';
+			'';
+			'';
+			'%  TTL_INTERPULSE_PERIOD (0x0517): Set/report the current TTL onset-to-onset interpulse period, in milliseconds.';
+			'packet_info(1303) = struct(		''name'',			''TTL_INTERPULSE_PERIOD'',...';
+			'								''payload'',		{{1, ''uint8''; 1, ''uint16''}},...';
+			'								''min_bytes'',	5,...';
+			'								''fixed_size'',	true);';
+			'';
+			'';
+			'%  TTL_PULSETRAIN_ABORT (0x0518): Report that a TTL pulsetrain was canceled before completion.';
+			'packet_info(1304) = struct(		''name'',			''TTL_PULSETRAIN_ABORT'',...';
+			'								''payload'',		{{1, ''uint8''; 1, ''uint32''}},...';
+			'								''min_bytes'',	7,...';
+			'								''fixed_size'',	true);';
+			'';
+			'';
+			'%  VIB_DUR (0x4000): Set/report the current vibration pulse duration, in microseconds.';
 			'packet_info(16384) = struct(	''name'',			''VIB_DUR'',...';
 			'								''payload'',		{{1, ''uint32''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% VIB_IPI (0x4002): Set/report the current vibration train onset-to-onset inter-pulse interval, in microseconds.';
+			'%  VIB_IPI (0x4002): Set/report the current vibration train onset-to-onset inter-pulse interval, in microseconds.';
 			'packet_info(16386) = struct(	''name'',			''VIB_IPI'',...';
 			'								''payload'',		{{1, ''uint32''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% VIB_N_PULSE (0x4004): Set/report the current vibration train duration, in number of pulses.';
+			'%  VIB_N_PULSE (0x4004): Set/report the current vibration train duration, in number of pulses.';
 			'packet_info(16388) = struct(	''name'',			''VIB_N_PULSE'',...';
 			'								''payload'',		{{1, ''uint16''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% VIB_GAP (0x4006): Set/report the current vibration train skipped pulses starting and stopping index.';
+			'%  VIB_GAP (0x4006): Set/report the current vibration train skipped pulses starting and stopping index.';
 			'packet_info(16390) = struct(	''name'',			''VIB_GAP'',...';
 			'								''payload'',		{{2, ''uint16''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% VIB_MASK_ENABLE (0x400C): Enable/disable vibration tone masking (0 = disabled, 1 = enabled).';
+			'%  VIB_MASK_ENABLE (0x400C): Enable/disable vibration tone masking (0 = disabled, 1 = enabled).';
 			'packet_info(16396) = struct(	''name'',			''VIB_MASK_ENABLE'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% VIB_MASK_TONE_INDEX (0x400D): Set/report the current tone repertoire index for the masking tone.';
+			'%  VIB_MASK_TONE_INDEX (0x400D): Set/report the current tone repertoire index for the masking tone.';
 			'packet_info(16397) = struct(	''name'',			''VIB_MASK_TONE_INDEX'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% VIB_TASK_MODE (0x400F): Set/report the current vibration task mode (1 = BURST, 2 = GAP).';
+			'%  VIB_TASK_MODE (0x400F): Set/report the current vibration task mode (1 = BURST, 2 = GAP).';
 			'packet_info(16399) = struct(	''name'',			''VIB_TASK_MODE'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% VIB_INDEX (0x4011): Set/report the current vibration motor/actuator index.';
+			'%  VIB_INDEX (0x4011): Set/report the current vibration motor/actuator index.';
 			'packet_info(16401) = struct(	''name'',			''VIB_INDEX'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% CENTER_OFFSET (0x412A): Set/report the center-to-slot detector offset, in micrometers.';
+			'%  CENTER_OFFSET (0x412A): Set/report the center-to-slot detector offset, in micrometers.';
 			'packet_info(16682) = struct(	''name'',			''CENTER_OFFSET'',...';
 			'								''payload'',		{{1, ''uint16''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% RECENTER_COMPLETE (0x4133): Indicate that the handle is recentered.';
+			'%  RECENTER_COMPLETE (0x4133): Indicate that the handle is recentered.';
 			'packet_info(16691) = struct(	''name'',			''RECENTER_COMPLETE'',...';
 			'								''payload'',		{{1, ''uint32''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% BAUDRATE_TEST (0x7463): Send/receive a baud rate test packet (uint8 values 0-x, in order).';
+			'%  BAUDRATE_TEST (0x7463): Send/receive a baud rate test packet (uint8 values 0-x, in order).';
 			'packet_info(29795) = struct(	''name'',			''BAUDRATE_TEST'',...';
 			'								''payload'',		{{256, ''uint8''}},...';
 			'								''min_bytes'',	258,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% REPORT_BAUDRATE (0x7465): Report the current baud rate (in Hz).';
+			'%  REPORT_BAUDRATE (0x7465): Report the current baud rate (in Hz).';
 			'packet_info(29797) = struct(	''name'',			''REPORT_BAUDRATE'',...';
 			'								''payload'',		{{1, ''uint32''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% LOADCELL_VAL_ADC (0xAA07): Report the current force/loadcell value, in ADC ticks (uint16).';
+			'%  LOADCELL_VAL_ADC (0xAA07): Report the current force/loadcell value, in ADC ticks (uint16).';
 			'packet_info(43527) = struct(	''name'',			''LOADCELL_VAL_ADC'',...';
 			'								''payload'',		{{1, ''uint32''; 1, ''uint8''; 1, ''uint16''}},...';
 			'								''min_bytes'',	9,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% LOADCELL_INDEX (0xAA08): Set/report the current loadcell/force sensor index.';
+			'%  LOADCELL_INDEX (0xAA08): Set/report the current loadcell/force sensor index.';
 			'packet_info(43528) = struct(	''name'',			''LOADCELL_INDEX'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% LOADCELL_VAL_GM (0xAA0B): Report the current force/loadcell value, in units of grams (float).';
+			'%  LOADCELL_VAL_GM (0xAA0B): Report the current force/loadcell value, in units of grams (float).';
 			'packet_info(43531) = struct(	''name'',			''LOADCELL_VAL_GM'',...';
 			'								''payload'',		{{1, ''uint32''; 1, ''uint8''; 1, ''single''}},...';
 			'								''min_bytes'',	11,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% LOADCELL_CAL_BASELINE (0xAA0D): Set/report the current loadcell/force calibration baseline, in ADC ticks (float).';
+			'%  LOADCELL_CAL_BASELINE (0xAA0D): Set/report the current loadcell/force calibration baseline, in ADC ticks (float).';
 			'packet_info(43533) = struct(	''name'',			''LOADCELL_CAL_BASELINE'',...';
 			'								''payload'',		{{1, ''single''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% LOADCELL_CAL_SLOPE (0xAA0F): Set/report the current loadcell/force calibration slope, in grams per ADC tick (float).';
+			'%  LOADCELL_CAL_SLOPE (0xAA0F): Set/report the current loadcell/force calibration slope, in grams per ADC tick (float).';
 			'packet_info(43535) = struct(	''name'',			''LOADCELL_CAL_SLOPE'',...';
 			'								''payload'',		{{1, ''single''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% LOADCELL_DIGPOT_BASELINE (0xAA11): Set/report the current loadcell/force baseline-adjusting digital potentiometer setting, scaled 0-1 (float).';
+			'%  LOADCELL_DIGPOT_BASELINE (0xAA11): Set/report the current loadcell/force baseline-adjusting digital potentiometer setting, scaled 0-1 (float).';
 			'packet_info(43537) = struct(	''name'',			''LOADCELL_DIGPOT_BASELINE'',...';
 			'								''payload'',		{{1, ''single''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% LOADCELL_VAL_DGM (0xAA13): Report the current force/loadcell value, in units of decigrams (int16).';
+			'%  LOADCELL_VAL_DGM (0xAA13): Report the current force/loadcell value, in units of decigrams (int16).';
 			'packet_info(43539) = struct(	''name'',			''LOADCELL_VAL_DGM'',...';
 			'								''payload'',		{{1, ''uint32''; 1, ''uint8''; 1, ''int16''}},...';
 			'								''min_bytes'',	9,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% LOADCELL_GAIN (0xAA15): Set/report the current force/loadcell gain setting (float).';
+			'%  LOADCELL_GAIN (0xAA15): Set/report the current force/loadcell gain setting (float).';
 			'packet_info(43541) = struct(	''name'',			''LOADCELL_GAIN'',...';
 			'								''payload'',		{{1, ''single''}},...';
 			'								''min_bytes'',	6,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% PASSTHRU_UP (0xBCDF): Route the immediately following block upstream, typically to the controller or computer.';
+			'%  PASSTHRU_UP (0xBCDF): Route the immediately following block upstream, typically to the controller or computer.';
 			'packet_info(48351) = struct(	''name'',			''PASSTHRU_UP'',...';
 			'								''payload'',		{{1, ''uint8''; NaN, ''uint8''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	false);';
 			'';
 			'';
-			'% REQ_OTMP_IOUT (0xBCF0): Request the OmniTrak Module Port (OTMP) output current for the specified port, in milliamps.';
+			'%  REQ_OTMP_IOUT (0xBCF0): Request the OmniTrak Module Port (OTMP) output current for the specified port, in milliamps.';
 			'packet_info(48368) = struct(	''name'',			''REQ_OTMP_IOUT'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% OTMP_IOUT (0xBCF1): Report the OmniTrak Module Port (OTMP) output current for the specified port, in milliamps.';
+			'%  OTMP_IOUT (0xBCF1): Report the OmniTrak Module Port (OTMP) output current for the specified port, in milliamps.';
 			'packet_info(48369) = struct(	''name'',			''OTMP_IOUT'',...';
 			'								''payload'',		{{1, ''uint8''; 1, ''single''}},...';
 			'								''min_bytes'',	7,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% OTMP_ACTIVE_PORTS (0xBCF3): Report a bitmask indicating which OmniTrak Module Ports (OTMPs) are active based on current draw.';
+			'%  OTMP_ACTIVE_PORTS (0xBCF3): Report a bitmask indicating which OmniTrak Module Ports (OTMPs) are active based on current draw.';
 			'packet_info(48371) = struct(	''name'',			''OTMP_ACTIVE_PORTS'',...';
 			'								''payload'',		{{2, ''uint8''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% REQ_OTMP_HIGH_VOLT (0xBCF4): Request the current high voltage supply setting for the specified OmniTrak Module Port (0 = off <default>, 1 = high voltage enabled).';
+			'%  REQ_OTMP_HIGH_VOLT (0xBCF4): Request the current high voltage supply setting for the specified OmniTrak Module Port (0 = off <default>, 1 = high voltage enabled).';
 			'packet_info(48372) = struct(	''name'',			''REQ_OTMP_HIGH_VOLT'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% OTMP_HIGH_VOLT (0xBCF5): Set/report the current high voltage supply setting for the specified OmniTrak Module Port (0 = off <default>, 1 = high voltage enabled).';
+			'%  OTMP_HIGH_VOLT (0xBCF5): Set/report the current high voltage supply setting for the specified OmniTrak Module Port (0 = off <default>, 1 = high voltage enabled).';
 			'packet_info(48373) = struct(	''name'',			''OTMP_HIGH_VOLT'',...';
 			'								''payload'',		{{2, ''uint8''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% OTMP_OVERCURRENT_PORTS (0xBCF7): Report a bitmask indicating which OmniTrak Module Ports (OTMPs) are in overcurrent shutdown.';
+			'%  OTMP_OVERCURRENT_PORTS (0xBCF7): Report a bitmask indicating which OmniTrak Module Ports (OTMPs) are in overcurrent shutdown.';
 			'packet_info(48375) = struct(	''name'',			''OTMP_OVERCURRENT_PORTS'',...';
 			'								''payload'',		{{2, ''uint8''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% REQ_OTMP_CHUNK_SIZE (0xBCF9): Request the current serial "chunk" size required for transmission from the specified OmniTrak Module Port (OTMP), in bytes.';
+			'%  REQ_OTMP_CHUNK_SIZE (0xBCF9): Request the current serial "chunk" size required for transmission from the specified OmniTrak Module Port (OTMP), in bytes.';
 			'packet_info(48377) = struct(	''name'',			''REQ_OTMP_CHUNK_SIZE'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% OTMP_CHUNK_SIZE (0xBCFA): Set/report the current serial "chunk" size required for transmission from the specified OmniTrak Module Port (OTMP), in bytes.';
+			'%  OTMP_CHUNK_SIZE (0xBCFA): Set/report the current serial "chunk" size required for transmission from the specified OmniTrak Module Port (OTMP), in bytes.';
 			'packet_info(48378) = struct(	''name'',			''OTMP_CHUNK_SIZE'',...';
 			'								''payload'',		{{2, ''uint8''}},...';
 			'								''min_bytes'',	4,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% REQ_OTMP_PASSTHRU_TIMEOUT (0xBCFB): Request the current serial "chunk" timeout for the specified OmniTrak Module Port (OTMP), in microseconds.';
+			'%  REQ_OTMP_PASSTHRU_TIMEOUT (0xBCFB): Request the current serial "chunk" timeout for the specified OmniTrak Module Port (OTMP), in microseconds.';
 			'packet_info(48379) = struct(	''name'',			''REQ_OTMP_PASSTHRU_TIMEOUT'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% OTMP_PASSTHRU_TIMEOUT (0xBCFC): Set/report the current serial "chunk" timeout for the specified OmniTrak Module Port (OTMP), in microseconds.';
+			'%  OTMP_PASSTHRU_TIMEOUT (0xBCFC): Set/report the current serial "chunk" timeout for the specified OmniTrak Module Port (OTMP), in microseconds.';
 			'packet_info(48380) = struct(	''name'',			''OTMP_PASSTHRU_TIMEOUT'',...';
 			'								''payload'',		{{1, ''uint8''; 1, ''uint16''}},...';
 			'								''min_bytes'',	5,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% BLE_CONNECTED (0xC003): Indicate that a Bluetooth Low Energy (BLE) device connection is active (0 = closed/inactive, 1 = active).';
+			'%  BLE_CONNECTED (0xC003): Indicate that a Bluetooth Low Energy (BLE) device connection is active (0 = closed/inactive, 1 = active).';
 			'packet_info(49155) = struct(	''name'',			''BLE_CONNECTED'',...';
 			'								''payload'',		{{1, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	true);';
 			'';
 			'';
-			'% BLE_CHAR_NOTIFY (0xC006): Report a Bluetooth Low Energy (BLE) device characteristic notification value.';
+			'%  BLE_CHAR_NOTIFY (0xC006): Report a Bluetooth Low Energy (BLE) device characteristic notification value.';
 			'packet_info(49158) = struct(	''name'',			''BLE_CHAR_NOTIFY'',...';
 			'								''payload'',		{{NaN, ''uint8''}},...';
 			'								''min_bytes'',	3,...';
 			'								''fixed_size'',	false);';
 			'';
 			'';
-			'% BLE_DEVICE_NAME (0xC008): Report the address, local name, and service UUID of an available BLE device.';
+			'%  BLE_DEVICE_NAME (0xC008): Report the address, local name, and service UUID of an available BLE device.';
 			'packet_info(49160) = struct(	''name'',			''BLE_DEVICE_NAME'',...';
 			'								''payload'',		{{NaN, ''char''; NaN, ''char''; NaN, ''char''}},...';
 			'								''min_bytes'',	5,...';
@@ -6315,7 +6549,7 @@ switch class_file_name
 			'%	Library documentation:';
 			'%	https://github.com/Vulintus/OmniTrak_Serial_Communication';
 			'%';
-			'%	This function was programmatically generated: 2025-06-09, 07:46:00 (UTC)';
+			'%	This function was programmatically generated: 2025-10-05, 06:33:22 (UTC)';
 			'%';
 			'';
 			'pass_down_cmd = 48350;		%Route the immediately following block downstream to the specified port or VPB device.';
